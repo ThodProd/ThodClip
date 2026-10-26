@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'hub-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version, e.g. 1.0.0'
+        required: true
+        type: string
+      notes:
+        description: 'Release notes'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $tag = '${{ github.ref_name }}'
+            if ($tag -notmatch '^hub-v(\d+\.\d+\.\d+)$') { throw "Unexpected tag: $tag" }
+            $version = $Matches[1]
+          } else {
+            $version = '${{ inputs.version }}'
+            if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Unexpected version: $version" }
+          }
+          $manifest = Get-Content -LiteralPath 'hub/manifest.json' -Raw | ConvertFrom-Json
+          if ($manifest.version -ne $version) {
+            throw "Manifest version $($manifest.version) does not match $version. Bump hub/manifest.json first."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=hub-v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: dotnet test .\tests\ThodClip.Tests\ThodClip.Tests.csproj -c Release --nologo
+
+      - name: Build and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $notes = '${{ inputs.notes }}'
+          if (-not $notes) { $notes = "ThodClip $('${{ steps.version.outputs.version }}') — история буфера обмена и архив скриншотов." }
+          .\scripts\build.ps1 -Version '${{ steps.version.outputs.version }}' -Notes $notes
+
+      - name: Verify package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ steps.version.outputs.version }}'
+          $zip = "artifacts/thodclip-$version-win-x64.zip"
+          $descriptor = 'artifacts/thodhub-release.json'
+          if (-not (Test-Path $zip)) { throw "Missing $zip" }
+          if (-not (Test-Path $descriptor)) { throw "Missing $descriptor" }
+          $release = Get-Content -LiteralPath $descriptor -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $zip).Length
+          if ($release.version -ne $version) { throw 'Descriptor version mismatch.' }
+          if ($release.sha256 -ne $hash) { throw 'Descriptor SHA-256 mismatch.' }
+          if ([long]$release.size -ne $size) { throw 'Descriptor size mismatch.' }
+          if ($release.packageUrl -notlike "https://github.com/ThodProd/ThodClip/releases/download/hub-v$version/*") {
+            throw 'Descriptor packageUrl mismatch.'
+          }
+
+      - name: Ensure release does not exist
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view '${{ steps.version.outputs.tag }}' --repo '${{ github.repository }}' 2>$null
+          if ($LASTEXITCODE -eq 0) { throw 'Release already exists and must not be replaced.' }
+          exit 0
+
+      - name: Publish stable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ steps.version.outputs.version }}'
+          $tag = '${{ steps.version.outputs.tag }}'
+          $notes = '${{ inputs.notes }}'
+          if (-not $notes) { $notes = "ThodClip $version — история буфера обмена и архив скриншотов." }
+          gh release create $tag `
+            "artifacts/thodclip-$version-win-x64.zip" `
+            "artifacts/thodhub-release.json" `
+            --repo '${{ github.repository }}' `
+            --target '${{ github.sha }}' `
+            --title "ThodClip $version" `
+            --notes $notes `
+            --latest
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: thodclip-package
+          path: |
+            artifacts/thodclip-*-win-x64.zip
+            artifacts/thodhub-release.json
+          if-no-files-found: error

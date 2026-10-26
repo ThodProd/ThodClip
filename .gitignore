@@ -1,0 +1,8 @@
+.cache/
+artifacts/
+bin/
+obj/
+*.user
+TestResults/
+
+.qa/

@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThodClip</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" fill="none">
+            <rect x="10" y="8" width="24" height="30" rx="7" stroke="currentColor" stroke-width="2.6"/>
+            <rect x="17" y="14" width="24" height="30" rx="7" fill="var(--surface)" stroke="currentColor" stroke-width="2.6"/>
+            <path d="M23 24h12M23 30h8M23 36h10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="brand-copy">
+          <h1>ThodClip</h1>
+          <p>История буфера и архив скриншотов</p>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <button class="status-pill" id="capturePill" type="button" title="Включить или выключить запись">
+          <span class="status-dot"></span>
+          <span id="captureLabel">Запись включена</span>
+          <span class="switch" aria-hidden="true"><span></span></span>
+        </button>
+        <button class="icon-button" id="refreshButton" type="button" title="Обновить" aria-label="Обновить">
+          <span data-icon="refresh"></span>
+        </button>
+        <button class="icon-button" id="settingsButton" type="button" title="Настройки" aria-label="Настройки">
+          <span data-icon="settings"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="nav-row">
+      <nav class="tabs" aria-label="Разделы">
+        <button class="tab is-active" type="button" data-tab="clips">
+          <span data-icon="clipboard"></span>
+          <span>Буфер обмена</span>
+          <span class="tab-count" id="clipTabCount">0</span>
+        </button>
+        <button class="tab" type="button" data-tab="shots">
+          <span data-icon="image"></span>
+          <span>Скриншоты</span>
+          <span class="tab-count" id="shotTabCount">0</span>
+        </button>
+      </nav>
+
+      <label class="search" for="searchInput">
+        <span data-icon="search"></span>
+        <input id="searchInput" type="search" placeholder="Поиск по истории" autocomplete="off" spellcheck="false">
+        <button class="search-clear" id="searchClear" type="button" title="Очистить поиск" aria-label="Очистить поиск" hidden>
+          <span data-icon="close"></span>
+        </button>
+      </label>
+    </div>
+
+    <main class="main">
+      <section class="view is-active" id="clipsView" aria-label="Буфер обмена">
+        <div class="layout">
+          <aside class="sidebar">
+            <section class="calendar-card" aria-label="Календарь копирования">
+              <div class="calendar-head">
+                <div>
+                  <p class="eyebrow">Календарь</p>
+                  <h2 id="calendarTitle">—</h2>
+                </div>
+                <div class="calendar-nav">
+                  <button class="mini-button" id="calendarPrev" type="button" title="Предыдущий месяц" aria-label="Предыдущий месяц">
+                    <span data-icon="chevron-left"></span>
+                  </button>
+                  <button class="mini-button" id="calendarToday" type="button" title="Текущий месяц" aria-label="Текущий месяц">
+                    <span data-icon="target"></span>
+                  </button>
+                  <button class="mini-button" id="calendarNext" type="button" title="Следующий месяц" aria-label="Следующий месяц">
+                    <span data-icon="chevron-right"></span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="weekdays" aria-hidden="true">
+                <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
+              </div>
+              <div class="calendar-grid" id="calendarGrid"></div>
+
+              <div class="calendar-foot">
+                <span id="calendarSummary">Нет записей</span>
+                <span class="heat-legend" title="Насыщенность зависит от числа копий">
+                  <i class="heat-0"></i><i class="heat-1"></i><i class="heat-2"></i><i class="heat-3"></i><i class="heat-4"></i>
+                </span>
+              </div>
+            </section>
+
+            <section class="storage-card" aria-label="Хранилище">
+              <div class="storage-row">
+                <span class="storage-icon" data-icon="database"></span>
+                <div>
+                  <p>Хранилище</p>
+                  <strong id="storageSize">—</strong>
+                </div>
+              </div>
+              <div class="storage-stats">
+                <div><span id="storageClips">0</span><small>копий</small></div>
+                <div><span id="storageShots">0</span><small>снимков</small></div>
+              </div>
+              <button class="quiet-button" id="openDataFolder" type="button">
+                <span data-icon="folder"></span> Открыть папку данных
+              </button>
+              <p class="hint">Данные хранятся вне папки версии и переживают обновления.</p>
+            </section>
+          </aside>
+
+          <section class="content">
+            <div class="content-head">
+              <div class="filters" role="group" aria-label="Фильтры">
+                <button class="chip is-active" type="button" data-filter="all">Все</button>
+                <button class="chip" type="button" data-filter="text">Текст</button>
+                <button class="chip" type="button" data-filter="files">Файлы</button>
+                <button class="chip" type="button" data-filter="image">Картинки</button>
+                <button class="chip" type="button" data-filter="pinned">Закреплённые</button>
+              </div>
+            </div>
+
+            <div class="day-banner" id="dayBanner" hidden>
+              <div>
+                <span data-icon="calendar"></span>
+                <span id="dayBannerText">Выбран день</span>
+              </div>
+              <button class="link-button" id="dayBannerClear" type="button">Показать всю историю</button>
+            </div>
+
+            <div class="new-items" id="newItems" hidden>
+              <span data-icon="sparkle"></span>
+              <span>Появились новые записи</span>
+              <button class="link-button" id="newItemsRefresh" type="button">Обновить</button>
+            </div>
+
+            <div class="clip-list" id="clipsList" aria-live="polite"></div>
+
+            <div class="empty-state" id="clipsEmpty" hidden>
+              <div class="empty-art" aria-hidden="true"><span data-icon="clipboard"></span></div>
+              <h3>Пока пусто</h3>
+              <p>Скопируйте что-нибудь — текст, файлы или картинку. ThodClip сохранит запись сюда и не потеряет её после перезапуска.</p>
+            </div>
+
+            <div class="list-footer">
+              <button class="quiet-button" id="loadMoreClips" type="button" hidden>Показать ещё</button>
+              <span id="clipsTotalLabel"></span>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="shotsView" aria-label="Скриншоты">
+        <div class="content shots-content">
+          <div class="content-head">
+            <div>
+              <h2 class="section-title">Архив скриншотов</h2>
+              <p class="section-subtitle">Копии снимков остаются здесь, даже если удалить оригинал из папки.</p>
+            </div>
+            <div class="content-actions">
+              <button class="quiet-button" id="importShots" type="button"><span data-icon="download"></span> Импорт</button>
+              <button class="quiet-button" id="openShotsFolder" type="button"><span data-icon="folder"></span> Папка</button>
+            </div>
+          </div>
+
+          <div class="shot-grid" id="shotsGrid" aria-live="polite"></div>
+
+          <div class="empty-state" id="shotsEmpty" hidden>
+            <div class="empty-art" aria-hidden="true"><span data-icon="image"></span></div>
+            <h3>Снимков пока нет</h3>
+            <p>Сделайте скриншот через Snipping Tool или сохраните его в папку «Изображения». ThodClip найдёт и заархивирует файл.</p>
+            <button class="primary-button" id="importShotsEmpty" type="button"><span data-icon="download"></span> Импортировать сейчас</button>
+          </div>
+
+          <div class="list-footer">
+            <button class="quiet-button" id="loadMoreShots" type="button" hidden>Показать ещё</button>
+            <span id="shotsTotalLabel"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="drawer" id="settingsDrawer" aria-label="Настройки" aria-hidden="true" hidden>
+    <div class="drawer-head">
+      <div>
+        <p class="eyebrow">ThodClip</p>
+        <h2>Настройки</h2>
+      </div>
+      <button class="icon-button" id="settingsClose" type="button" title="Закрыть" aria-label="Закрыть">
+        <span data-icon="close"></span>
+      </button>
+    </div>
+
+    <form id="settingsForm" class="drawer-body">
+      <section class="settings-group">
+        <h3>Запись</h3>
+        <label class="switch-row">
+          <span><strong>Записывать буфер обмена</strong><small>Пока ThodHUB открыт</small></span>
+          <input type="checkbox" id="setCaptureEnabled">
+          <i class="toggle"></i>
+        </label>
+        <label class="switch-row">
+          <span><strong>Уважать исключения Windows</strong><small>Пароли и данные с запретом истории не попадут в архив</small></span>
+          <input type="checkbox" id="setHonorExclusions">
+          <i class="toggle"></i>
+        </label>
+        <label class="switch-row">
+          <span><strong>Искать скриншоты автоматически</strong><small>Стандартные папки Windows и Snipping Tool</small></span>
+          <input type="checkbox" id="setAutoImport">
+          <i class="toggle"></i>
+        </label>
+      </section>
+
+      <section class="settings-group">
+        <h3>Повторы и хранение</h3>
+        <div class="field-grid">
+          <label class="field">
+            <span>Окно повторов</span>
+            <div class="input-unit"><input type="number" id="setDedupe" min="0" max="60" step="1"><em>сек</em></div>
+            <small>Одинаковые копии подряд объединяются</small>
+          </label>
+          <label class="field">
+            <span>Лимит записей</span>
+            <div class="input-unit"><input type="number" id="setMaxClips" min="0" max="200000" step="100"><em>шт</em></div>
+            <small>0 — без ограничения</small>
+          </label>
+          <label class="field">
+            <span>Максимум текста</span>
+            <div class="input-unit"><input type="number" id="setMaxText" min="64" max="2048" step="64"><em>КБ</em></div>
+            <small>Длинный текст обрезается при записи</small>
+          </label>
+          <label class="field">
+            <span>Лимит скриншотов</span>
+            <div class="input-unit"><input type="number" id="setMaxShots" min="0" max="51200" step="100"><em>МБ</em></div>
+            <small>0 — без ограничения, старые удаляются первыми</small>
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3>Папки наблюдения</h3>
+        <div class="folder-list" id="folderList"></div>
+        <button class="quiet-button" id="importFromSettings" type="button"><span data-icon="download"></span> Импортировать скриншоты</button>
+      </section>
+
+      <section class="settings-group">
+        <h3>Данные</h3>
+        <div class="settings-line"><span>Версия</span><strong id="aboutVersion">—</strong></div>
+        <div class="settings-line"><span>Папка данных</span><code id="aboutDataDir">—</code></div>
+        <div class="settings-line"><span>Занято</span><strong id="aboutStorage">—</strong></div>
+        <div class="drawer-actions">
+          <button class="quiet-button" id="settingsOpenFolder" type="button"><span data-icon="folder"></span> Открыть папку</button>
+          <button class="quiet-button" id="settingsImport" type="button"><span data-icon="download"></span> Импорт снимков</button>
+        </div>
+        <button class="quiet-button danger wide" id="settingsClearClips" type="button"><span data-icon="trash"></span> Очистить историю буфера</button>
+        <button class="quiet-button danger wide" id="settingsClearShots" type="button"><span data-icon="trash"></span> Очистить архив скриншотов</button>
+        <p class="hint">Очистка удаляет только базу ThodClip. Системный буфер и историю Windows (Win+V) это не затрагивает.</p>
+      </section>
+
+      <div class="drawer-footer">
+        <button class="primary-button" type="submit" id="saveSettings"><span data-icon="check"></span> Сохранить</button>
+        <button class="quiet-button" type="button" id="cancelSettings">Отмена</button>
+      </div>
+    </form>
+  </aside>
+
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <h3 id="modalTitle">Подтверждение</h3>
+      <p id="modalText"></p>
+      <label class="modal-check" id="modalCheckWrap" hidden>
+        <input type="checkbox" id="modalCheck" checked>
+        <span id="modalCheckLabel">Оставить закреплённые</span>
+      </label>
+      <div class="modal-actions">
+        <button class="quiet-button" id="modalCancel" type="button">Отмена</button>
+        <button class="danger-button" id="modalConfirm" type="button">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Просмотр изображения">
+    <div class="lightbox-panel">
+      <div class="lightbox-head">
+        <div>
+          <h3 id="lightboxTitle">Изображение</h3>
+          <p id="lightboxMeta"></p>
+        </div>
+        <button class="icon-button" id="lightboxClose" type="button" title="Закрыть" aria-label="Закрыть">
+          <span data-icon="close"></span>
+        </button>
+      </div>
+      <div class="lightbox-stage" id="lightboxStage">
+        <img id="lightboxImage" alt="">
+        <div class="lightbox-loader" id="lightboxLoader">Загрузка…</div>
+      </div>
+      <div class="lightbox-note" id="lightboxNote" hidden>Показан уменьшенный просмотр — оригинал доступен в папке данных.</div>
+      <div class="lightbox-actions">
+        <button class="primary-button" id="lightboxCopy" type="button"><span data-icon="copy"></span> Копировать</button>
+        <button class="quiet-button" id="lightboxSave" type="button"><span data-icon="download"></span> Сохранить</button>
+        <button class="quiet-button" id="lightboxReveal" type="button"><span data-icon="folder"></span> В папке</button>
+        <button class="quiet-button danger" id="lightboxDelete" type="button"><span data-icon="trash"></span> Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="thodhub.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
