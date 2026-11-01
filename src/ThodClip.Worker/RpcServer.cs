@@ -29,7 +29,7 @@ internal sealed class RpcServer(Engine engine)
 
             var task = Task.Run(async () =>
             {
-                string? id = null;
+                JsonElement? id = null;
                 object? response = null;
                 try
                 {
@@ -37,8 +37,9 @@ internal sealed class RpcServer(Engine engine)
                     var root = document.RootElement;
                     if (root.ValueKind != JsonValueKind.Object)
                         throw new RpcException(-32600, "Ожидался объект JSON-RPC.");
-                    if (root.TryGetProperty("id", out var idNode) && idNode.ValueKind == JsonValueKind.String)
-                        id = idNode.GetString();
+                    if (root.TryGetProperty("id", out var idNode) &&
+                        (idNode.ValueKind == JsonValueKind.String || idNode.ValueKind == JsonValueKind.Number))
+                        id = idNode.Clone();
                     if (id is null) return;
                     if (!root.TryGetProperty("method", out var methodNode) || methodNode.ValueKind != JsonValueKind.String)
                         throw new RpcException(-32600, "Не указан метод.");

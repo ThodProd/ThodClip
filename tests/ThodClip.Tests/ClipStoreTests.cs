@@ -287,4 +287,66 @@ public sealed class ClipStoreTests
         Assert.NotNull(store.ThumbnailFor(item));
         Assert.True(File.Exists(store.ResolveBlob(item)));
     }
+
+    [Fact]
+    public void Picture_name_text_entries_are_upgraded_to_image_previews()
+    {
+        using var root = new TestRoot();
+        using var store = root.Open();
+        var path = Path.Combine(root.Root, "{7D363957-1B7D-4F78-A0AE-09772276106D}.png");
+        File.WriteAllBytes(path, TestImages.Png(Color.Goldenrod, 120, 80));
+        var id = store.AddText(path, "msedgewebview2");
+
+        Assert.Equal(1, store.UpgradeImageReferenceClips());
+        var item = store.GetClip(id)!;
+        Assert.Equal("image", item.Kind);
+        Assert.Equal(path, Assert.Single(item.Files));
+        Assert.Equal(120, item.Width);
+        Assert.Equal(80, item.Height);
+        Assert.NotNull(store.ThumbnailFor(item));
+        Assert.True(File.Exists(store.ResolveBlob(item)));
+    }
+
+    [Fact]
+    public void Html_with_real_text_is_not_replaced_by_an_inline_picture()
+    {
+        using var root = new TestRoot();
+        var path = Path.Combine(root.Root, "inline.png");
+        File.WriteAllBytes(path, TestImages.Png(Color.Teal));
+        var uri = "file:///" + path.Replace('\\', '/');
+        var html = $"<html><body><!--StartFragment--><p>Обычный текст</p><img src=\"{uri}\"><!--EndFragment--></body></html>";
+
+        Assert.False(ImageReferenceResolver.TryResolveHtmlImage(html, out _, out _, out _, out _));
+    }
+
+    [Fact]
+    public void Html_with_only_a_picture_is_resolved()
+    {
+        using var root = new TestRoot();
+        var path = Path.Combine(root.Root, "inline.png");
+        File.WriteAllBytes(path, TestImages.Png(Color.Teal, 64, 48));
+        var uri = "file:///" + path.Replace('\\', '/');
+        var html = $"<html><body><!--StartFragment--><img src=\"{uri}\"><!--EndFragment--></body></html>";
+
+        Assert.True(ImageReferenceResolver.TryResolveHtmlImage(html, out var resolved, out var png,
+            out var width, out var height));
+        Assert.Equal(path, resolved);
+        Assert.NotNull(png);
+        Assert.Equal(64, width);
+        Assert.Equal(48, height);
+    }
+
+    [Fact]
+    public void Bare_picture_name_is_resolved_from_known_directory()
+    {
+        using var root = new TestRoot();
+        var name = "{" + Guid.NewGuid().ToString().ToUpperInvariant() + "}.png";
+        var path = Path.Combine(root.Root, name);
+        File.WriteAllBytes(path, TestImages.Png(Color.Goldenrod));
+
+        Assert.True(ImageReferenceResolver.LooksLikeImageReference(name));
+        Assert.True(ImageReferenceResolver.TryResolve(name, out var resolved, [root.Root]));
+        Assert.Equal(path, resolved);
+        Assert.False(ImageReferenceResolver.LooksLikeImageReference("Просто текст без картинки"));
+    }
 }

@@ -362,6 +362,102 @@ public sealed class ClipStore : IDisposable
         return converted;
     }
 
+    /// <summary>
+    /// Older versions stored a copied picture as plain text when the clipboard contained only a
+    /// temporary name such as "{GUID}.png". Resolve it against the folders Windows uses for
+    /// screen clippings and replace the text entry with a real picture preview.
+    /// </summary>
+    public int UpgradeImageReferenceClips(int limit = 300)
+    {
+        var candidates = new List<(long Id, string Text)>();
+        lock (_sync)
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = """
+                SELECT id,content FROM clips
+                WHERE kind='text' AND blob IS NULL AND length(content)>0 AND length(content)<=1024
+                ORDER BY id DESC LIMIT $limit
+                """;
+            command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 2000));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var text = reader.GetString(1);
+                if (ImageReferenceResolver.LooksLikeImageReference(text)) candidates.Add((reader.GetInt64(0), text));
+            }
+        }
+
+        var converted = 0;
+        foreach (var (id, text) in candidates)
+        {
+            if (!ImageReferenceResolver.TryResolve(text, out var path)) continue;
+            try
+            {
+                var png = ImageFiles.TryEncodeFileAsPng(path, out var width, out var height);
+                if (png is null) continue;
+                var hash = ImageFiles.HashBytes(png);
+                var blob = StoreBlob(BlobDirectory, hash, ".png", png);
+                var thumbPath = Path.Combine(ThumbDirectory, hash + ".jpg");
+                if (!File.Exists(thumbPath))
+                {
+                    using var stream = new MemoryStream(png);
+                    using var image = System.Drawing.Image.FromStream(stream);
+                    StoreBlob(ThumbDirectory, hash, ".jpg", ImageFiles.Thumbnail(image));
+                }
+                lock (_sync)
+                {
+                    using var update = _connection.CreateCommand();
+                    update.CommandText = """
+                        UPDATE clips SET kind='image', content='', files=$files, search=$search,
+                          blob=$blob, width=$width, height=$height, bytes=$bytes, hash=$hash,
+                          truncated=0
+                        WHERE id=$id AND kind='text'
+                        """;
+                    update.Parameters.AddWithValue("$files", JsonSerializer.Serialize(new[] { path }));
+                    update.Parameters.AddWithValue("$search",
+                        Lower("изображение " + width + "×" + height + "\n" + path));
+                    update.Parameters.AddWithValue("$blob", "blobs/" + Path.GetFileName(blob));
+                    update.Parameters.AddWithValue("$width", width);
+                    update.Parameters.AddWithValue("$height", height);
+                    update.Parameters.AddWithValue("$bytes", png.Length);
+                    update.Parameters.AddWithValue("$hash", hash);
+                    update.Parameters.AddWithValue("$id", id);
+                    if (update.ExecuteNonQuery() > 0) converted++;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException or InvalidDataException) { }
+        }
+        if (converted > 0) Bump();
+        return converted;
+    }
+
+    /// <summary>
+    /// Returns a cached JPEG preview for a picture that belongs to a "files" entry. The cache key
+    /// includes the file size and modification time, so replaced pictures get a fresh thumbnail.
+    /// </summary>
+    public string? ThumbnailForFile(string path)
+    {
+        try
+        {
+            if (!ImageFiles.IsImagePath(path)) return null;
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length <= 0 || info.Length > 96L * 1024 * 1024) return null;
+            var key = ImageFiles.HashString($"file\n{path}\n{info.Length}\n{info.LastWriteTimeUtc.Ticks}");
+            var directory = Path.Combine(ThumbDirectory, "files");
+            var thumbPath = Path.Combine(directory, key + ".jpg");
+            if (File.Exists(thumbPath)) return thumbPath;
+            var bytes = ImageFiles.Thumbnail(path);
+            StoreBlob(directory, key, ".jpg", bytes);
+            return File.Exists(thumbPath) ? thumbPath : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+            or OutOfMemoryException or InvalidDataException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     public ClipPage QueryClips(string? query, string? kind, bool pinnedOnly, string? date, int offset, int limit)
     {
         offset = Math.Max(0, offset);

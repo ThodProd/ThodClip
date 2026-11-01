@@ -71,6 +71,7 @@
     lastImportError: '',
     pollTimer: null,
     calendarTimer: null,
+    clipsTimer: null,
     queryTimer: null
   };
 
@@ -241,7 +242,7 @@
     await Promise.all([loadSettings(), loadStatus()]);
     await loadCalendar(true);
     await loadClips(0);
-    state.pollTimer = setInterval(pollStatus, 12000);
+    state.pollTimer = setInterval(pollStatus, 5000);
   }
 
   function restoreQuery() {
@@ -392,9 +393,14 @@
       showToast('Импорт скриншотов: ' + status.import.error, { error: true });
     }
 
-    if (previous && status.clipCount > previous.clipCount && state.activeTab === 'clips' && dom.lightbox.hidden) {
-      dom.newItems.hidden = false;
+    if (previous && status.clipCount > previous.clipCount) {
       scheduleCalendarRefresh();
+      if (state.activeTab === 'clips' && dom.lightbox.hidden && dom.modalBackdrop.hidden && dom.settingsDrawer.hidden) {
+        // New copies should appear by themselves. Reload only while the user is at the top,
+        // otherwise keep their scroll position and offer the refresh banner.
+        if (window.scrollY < 140) scheduleClipsRefresh();
+        else dom.newItems.hidden = false;
+      }
     } else if (previous && status.clipCount !== previous.clipCount) {
       scheduleCalendarRefresh();
     }
@@ -404,6 +410,19 @@
     }
 
     if (dom.settingsDrawer.hidden) fillSettingsForm(status);
+  }
+
+  function scheduleClipsRefresh() {
+    clearTimeout(state.clipsTimer);
+    state.clipsTimer = setTimeout(() => {
+      state.clipsTimer = null;
+      if (state.activeTab !== 'clips' || !dom.lightbox.hidden || !dom.modalBackdrop.hidden || !dom.settingsDrawer.hidden) return;
+      if (state.clipsLoading) {
+        state.clipsPending = true;
+        return;
+      }
+      loadClips(0);
+    }, 320);
   }
 
   function updateCapturePill(status) {
@@ -607,6 +626,18 @@
         main.append(thumb);
       }
     } else if (item.kind === 'files') {
+      if (item.thumb) {
+        const thumb = el('button', 'clip-thumb clip-thumb-mini');
+        thumb.type = 'button';
+        thumb.title = 'Открыть изображение';
+        const img = document.createElement('img');
+        img.src = item.thumb;
+        img.alt = 'Миниатюра изображения';
+        img.loading = 'lazy';
+        thumb.append(img);
+        thumb.addEventListener('click', () => openLightbox('clip', item.id));
+        main.append(thumb);
+      }
       const list = el('ul', 'clip-files');
       (item.files || []).slice(0, 4).forEach(path => {
         const line = el('li', 'file-line');
@@ -1222,16 +1253,21 @@
         ? await rpc('shots.get', { id })
         : await rpc('clips.get', { id });
       const item = detail.item;
+      const isFiles = item.kind === 'files';
       state.lightbox.item = item;
       state.lightbox.dataUrl = detail.dataUrl;
       state.lightbox.preview = !!detail.preview;
       dom.lightboxImage.src = detail.dataUrl;
-      dom.lightboxImage.alt = item.name || (item.kind === 'image' ? 'Изображение из буфера' : 'Снимок');
+      dom.lightboxImage.alt = item.name || (isFiles ? 'Изображение из файла' : item.kind === 'image' ? 'Изображение из буфера' : 'Снимок');
       dom.lightboxLoader.hidden = true;
       dom.lightboxTitle.textContent = kind === 'shot'
         ? (item.name || 'Снимок')
-        : `Изображение ${formatNumber(item.width)} × ${formatNumber(item.height)}`;
-      const bits = [`${formatNumber(item.width)}×${formatNumber(item.height)}`, formatBytes(item.bytes)];
+        : isFiles
+          ? (baseName((item.files || [])[0]) || 'Изображение')
+          : `Изображение ${formatNumber(item.width)} × ${formatNumber(item.height)}`;
+      const bits = [];
+      if (!isFiles) bits.push(`${formatNumber(item.width)}×${formatNumber(item.height)}`);
+      bits.push(formatBytes(item.bytes));
       if (item.source) bits.push(item.source);
       bits.push(shortDate(item.createdAt));
       dom.lightboxMeta.textContent = bits.join(' · ');
@@ -1270,7 +1306,11 @@
       return;
     }
     const mime = dataUrl.slice(5, dataUrl.indexOf(';'));
-    const name = kind === 'shot' ? (item.name || `thodclip-${item.id}`) : `clip-${item.id}`;
+    const name = kind === 'shot'
+      ? (item.name || `thodclip-${item.id}`)
+      : item.kind === 'files'
+        ? (baseName((item.files || [])[0]) || `clip-${item.id}`)
+        : `clip-${item.id}`;
     try {
       await saveDataUrl(dataUrl, name, mime, false);
     } catch (error) {
@@ -1317,7 +1357,9 @@
       title: 'Удалить изображение?',
       text: kind === 'shot'
         ? 'Архивная копия будет удалена. Оригинал в исходной папке не затрагивается.'
-        : 'Изображение будет удалено из истории ThodClip.',
+        : item.kind === 'files'
+          ? 'Запись будет удалена из истории ThodClip. Исходный файл не затрагивается.'
+          : 'Изображение будет удалено из истории ThodClip.',
       confirmText: 'Удалить',
       danger: true
     });

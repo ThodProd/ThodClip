@@ -3,7 +3,7 @@
 
   Example:
     .\scripts\build.ps1
-    .\scripts\build.ps1 -Version 1.0.1 -Notes "Что изменилось"
+    .\scripts\build.ps1 -Version 1.0.2 -Notes "Что изменилось"
 #>
 [CmdletBinding()]
 param(

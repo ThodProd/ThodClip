@@ -47,6 +47,8 @@ internal sealed class Engine : IAsyncDisposable
                 _store.VerifyShots();
                 var upgraded = _store.UpgradeImageFileClips();
                 if (upgraded > 0) Log.Info($"converted {upgraded} copied picture entries to previews");
+                var references = _store.UpgradeImageReferenceClips();
+                if (references > 0) Log.Info($"resolved {references} picture-name entries to previews");
             }
             catch (Exception ex)
             {
@@ -234,11 +236,25 @@ internal sealed class Engine : IAsyncDisposable
         var offset = Int(parameters, "offset", 0);
         var limit = Int(parameters, "limit", 40);
         var page = _store.QueryClips(query, kind, pinned, Str(parameters, "date"), offset, limit);
+        var fileThumbBudget = 12;
         foreach (var item in page.Items)
         {
-            if (item.Kind != "image") continue;
-            var thumb = _store.ThumbnailFor(item);
-            if (thumb is not null) item.Thumb = DataUrl(thumb, "image/jpeg", 2_000_000);
+            if (item.Kind == "image")
+            {
+                var thumb = _store.ThumbnailFor(item);
+                if (thumb is not null) item.Thumb = DataUrl(thumb, "image/jpeg", 2_000_000);
+                continue;
+            }
+            if (item.Kind != "files" || fileThumbBudget <= 0) continue;
+            foreach (var path in item.Files)
+            {
+                if (!ImageFiles.IsImagePath(path)) continue;
+                var thumb = _store.ThumbnailForFile(path);
+                if (thumb is null) continue;
+                item.Thumb = DataUrl(thumb, "image/jpeg", 1_500_000);
+                fileThumbBudget--;
+                break;
+            }
         }
         return page;
     }
@@ -269,21 +285,34 @@ internal sealed class Engine : IAsyncDisposable
         {
             var path = _store.ResolveBlob(item);
             if (!File.Exists(path)) throw new RpcException(-32004, "Файл изображения не найден.");
-            var bytes = File.ReadAllBytes(path);
-            if (bytes.Length <= MaxInlineBytes)
-            {
-                dataUrl = "data:image/png;base64," + Convert.ToBase64String(bytes);
-                mime = "image/png";
-            }
-            else
-            {
-                var jpeg = ImageFiles.Preview(path, 1920, 1440);
-                dataUrl = "data:image/jpeg;base64," + Convert.ToBase64String(jpeg);
-                mime = "image/jpeg";
-                preview = true;
-            }
+            (dataUrl, mime, preview) = ReadImage(path);
+        }
+        else if (item.Kind == "files")
+        {
+            var path = item.Files.FirstOrDefault(x => ImageFiles.IsImagePath(x) && File.Exists(x));
+            if (path is not null) (dataUrl, mime, preview) = ReadImage(path);
         }
         return new { item, dataUrl, mime, preview };
+    }
+
+    private static (string? DataUrl, string? Mime, bool Preview) ReadImage(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        if (bytes.Length <= MaxInlineBytes)
+        {
+            var mime = Path.GetExtension(path).ToLowerInvariant() switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".gif" => "image/gif",
+                ".bmp" => "image/bmp",
+                ".webp" => "image/webp",
+                ".tif" or ".tiff" => "image/tiff",
+                _ => "image/png"
+            };
+            return ($"data:{mime};base64," + Convert.ToBase64String(bytes), mime, false);
+        }
+        var jpeg = ImageFiles.Preview(path, 1920, 1440);
+        return ("data:image/jpeg;base64," + Convert.ToBase64String(jpeg), "image/jpeg", true);
     }
 
     private object ClipCopy(JsonElement? parameters)
@@ -324,9 +353,14 @@ internal sealed class Engine : IAsyncDisposable
     {
         var id = Long(parameters, "id");
         var item = _store.GetClip(id) ?? throw new RpcException(-32004, "Запись не найдена.");
-        if (item.Kind != "image") throw new RpcException(-32010, "У этой записи нет файла изображения.");
-        var path = _store.ResolveBlob(item);
-        if (!File.Exists(path)) throw new RpcException(-32004, "Файл изображения не найден.");
+        var path = item.Kind switch
+        {
+            "image" => _store.ResolveBlob(item),
+            "files" => item.Files.FirstOrDefault(File.Exists),
+            _ => null
+        };
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            throw new RpcException(-32010, "У этой записи нет доступного файла.");
         Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true })?.Dispose();
         return new { ok = true };
     }

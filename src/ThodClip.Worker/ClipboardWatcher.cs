@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using ThodClip.Core;
 
@@ -191,6 +192,8 @@ internal sealed class ClipboardWatcher : IDisposable
                 if (TryImageFile(data, source, out var imageFile)) { Publish(imageFile); return; }
                 if (TryFiles(data, source, out var files)) { Publish(files); return; }
                 if (TryImage(data, source, out var image)) { Publish(image); return; }
+                if (TryHtmlImage(data, source, out var htmlImage)) { Publish(htmlImage); return; }
+                if (TryImageReference(data, source, out var imageReference)) { Publish(imageReference); return; }
                 if (TryText(data, source, out var text)) { Publish(text); return; }
                 return;
             }
@@ -275,6 +278,77 @@ internal sealed class ClipboardWatcher : IDisposable
         }
         catch (Exception ex) when (ex is ExternalException or COMException or ArgumentException or OutOfMemoryException) { }
         return false;
+    }
+
+    /// <summary>
+    /// WebView2 and browser pages often put an HTML fragment on the clipboard together with text.
+    /// When the fragment points to a local image (or contains a data URL), keep the real picture.
+    /// </summary>
+    private static bool TryHtmlImage(IDataObject data, string? source, out ClipboardPayload payload)
+    {
+        payload = null!;
+        try
+        {
+            if (!data.GetDataPresent("HTML Format")) return false;
+            var html = ReadClipboardString(data.GetData("HTML Format"));
+            if (string.IsNullOrWhiteSpace(html)) return false;
+            if (!ImageReferenceResolver.TryResolveHtmlImage(html, out var path, out var png,
+                    out var width, out var height)) return false;
+            payload = new ClipboardPayload
+            {
+                Kind = "image", Png = png, Width = width, Height = height, Source = source,
+                Files = string.IsNullOrWhiteSpace(path) ? Array.Empty<string>() : new[] { path }
+            };
+            return true;
+        }
+        catch (Exception ex) when (ex is ExternalException or COMException or ArgumentException
+            or OutOfMemoryException or IOException or NotSupportedException) { }
+        return false;
+    }
+
+    /// <summary>
+    /// Some programs copy only a temporary picture name such as "{GUID}.png". If that file still
+    /// exists in the Windows screen-clip folder, capture it as an image instead of a text line.
+    /// </summary>
+    private static bool TryImageReference(IDataObject data, string? source, out ClipboardPayload payload)
+    {
+        payload = null!;
+        try
+        {
+            string? text = null;
+            if (data.GetDataPresent(DataFormats.UnicodeText))
+                text = data.GetData(DataFormats.UnicodeText) as string;
+            if (string.IsNullOrWhiteSpace(text) && data.GetDataPresent(DataFormats.Text))
+                text = data.GetData(DataFormats.Text) as string;
+            if (string.IsNullOrWhiteSpace(text) || !ImageReferenceResolver.LooksLikeImageReference(text)) return false;
+            if (!ImageReferenceResolver.TryResolve(text, out var path)) return false;
+            var png = ImageFiles.TryEncodeFileAsPng(path, out var width, out var height);
+            if (png is null) return false;
+            payload = new ClipboardPayload
+            {
+                Kind = "image", Png = png, Width = width, Height = height, Source = source,
+                Files = new[] { path }
+            };
+            return true;
+        }
+        catch (Exception ex) when (ex is ExternalException or COMException or ArgumentException
+            or OutOfMemoryException or IOException or NotSupportedException) { }
+        return false;
+    }
+
+    private static string? ReadClipboardString(object? value)
+    {
+        try
+        {
+            return value switch
+            {
+                string text => text,
+                MemoryStream stream => Encoding.UTF8.GetString(ReadAll(stream)),
+                byte[] bytes => Encoding.UTF8.GetString(bytes),
+                _ => null
+            };
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or ArgumentException) { return null; }
     }
 
     private static byte[] ReadAll(MemoryStream stream)
