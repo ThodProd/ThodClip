@@ -263,7 +263,7 @@ public sealed class ClipStore : IDisposable
         return InsertClip("files", content, search, JsonSerializer.Serialize(files), null, 0, 0, bytes, hash, source, false);
     }
 
-    public long AddImage(byte[] png, int width, int height, string? source)
+    public long AddImage(byte[] png, int width, int height, string? source, IReadOnlyList<string>? files = null)
     {
         if (png.Length == 0 || width <= 0 || height <= 0) return 0;
         var hash = ImageFiles.HashBytes(png);
@@ -280,15 +280,86 @@ public sealed class ClipStore : IDisposable
             }
             catch (Exception ex) when (ex is ArgumentException or OutOfMemoryException or IOException) { }
         }
+        var originals = (files ?? Array.Empty<string>())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToArray();
         var relative = "blobs/" + Path.GetFileName(blob);
-        var search = Lower("изображение " + width + "×" + height + "\n" + source);
-        return InsertClip("image", "", search, "[]", relative, width, height, png.Length, hash, source, false);
+        var search = Lower("изображение " + width + "×" + height + "\n" + source + "\n" + string.Join("\n", originals));
+        return InsertClip("image", "", search, JsonSerializer.Serialize(originals), relative, width, height,
+            png.Length, hash, source, false);
     }
 
     public string? ThumbnailFor(ClipItem item)
     {
         var path = Path.Combine(ThumbDirectory, Path.GetFileNameWithoutExtension(item.Blob ?? "") + ".jpg");
         return File.Exists(path) ? path : null;
+    }
+
+    /// <summary>
+    /// Older versions stored a copied picture as a "files" entry when the clipboard delivered a
+    /// temporary path such as {GUID}.png. Those entries get a real preview once the file still exists.
+    /// </summary>
+    public int UpgradeImageFileClips(int limit = 120)
+    {
+        var candidates = new List<(long Id, string Path)>();
+        lock (_sync)
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT id,files FROM clips WHERE kind='files' AND blob IS NULL ORDER BY id DESC LIMIT $limit";
+            command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 2000));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                string[]? files = null;
+                try { files = JsonSerializer.Deserialize<string[]>(reader.GetString(1)); }
+                catch (JsonException) { }
+                if (files is not { Length: 1 } || string.IsNullOrWhiteSpace(files[0])) continue;
+                candidates.Add((reader.GetInt64(0), files[0]));
+            }
+        }
+
+        var converted = 0;
+        foreach (var (id, path) in candidates)
+        {
+            if (!ImageFiles.IsImagePath(path) || !File.Exists(path)) continue;
+            try
+            {
+                var png = ImageFiles.TryEncodeFileAsPng(path, out var width, out var height);
+                if (png is null) continue;
+                var hash = ImageFiles.HashBytes(png);
+                var blob = StoreBlob(BlobDirectory, hash, ".png", png);
+                var thumbPath = Path.Combine(ThumbDirectory, hash + ".jpg");
+                if (!File.Exists(thumbPath))
+                {
+                    using var stream = new MemoryStream(png);
+                    using var image = System.Drawing.Image.FromStream(stream);
+                    StoreBlob(ThumbDirectory, hash, ".jpg", ImageFiles.Thumbnail(image));
+                }
+                lock (_sync)
+                {
+                    using var update = _connection.CreateCommand();
+                    update.CommandText = """
+                        UPDATE clips SET kind='image', content='', search=$search, blob=$blob,
+                          width=$width, height=$height, bytes=$bytes, hash=$hash
+                        WHERE id=$id AND kind='files'
+                        """;
+                    update.Parameters.AddWithValue("$search", Lower("изображение " + width + "×" + height + "\n" + path));
+                    update.Parameters.AddWithValue("$blob", "blobs/" + Path.GetFileName(blob));
+                    update.Parameters.AddWithValue("$width", width);
+                    update.Parameters.AddWithValue("$height", height);
+                    update.Parameters.AddWithValue("$bytes", png.Length);
+                    update.Parameters.AddWithValue("$hash", hash);
+                    update.Parameters.AddWithValue("$id", id);
+                    if (update.ExecuteNonQuery() > 0) converted++;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or OutOfMemoryException or InvalidDataException) { }
+        }
+        if (converted > 0) Bump();
+        return converted;
     }
 
     public ClipPage QueryClips(string? query, string? kind, bool pinnedOnly, string? date, int offset, int limit)
@@ -456,6 +527,24 @@ public sealed class ClipStore : IDisposable
         }
     }
 
+    private void DeleteUnusedBlobs(IEnumerable<string> blobs)
+    {
+        foreach (var blob in blobs.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            bool used;
+            lock (_sync)
+            {
+                using var check = _connection.CreateCommand();
+                check.CommandText = "SELECT 1 FROM clips WHERE blob=$blob LIMIT 1";
+                check.Parameters.AddWithValue("$blob", blob);
+                used = check.ExecuteScalar() is not null;
+            }
+            if (used) continue;
+            var name = Path.GetFileNameWithoutExtension(blob);
+            DeleteFiles(blob, "thumbs/" + name + ".jpg");
+        }
+    }
+
     public int DeleteClips(IEnumerable<long> ids)
     {
         var list = ids.Distinct().Take(1000).ToArray();
@@ -479,11 +568,7 @@ public sealed class ClipStore : IDisposable
             }
             transaction.Commit();
         }
-        foreach (var blob in removed)
-        {
-            var name = Path.GetFileNameWithoutExtension(blob);
-            DeleteFiles(blob, "thumbs/" + name + ".jpg");
-        }
+        DeleteUnusedBlobs(removed);
         Bump();
         return list.Length;
     }
@@ -491,6 +576,7 @@ public sealed class ClipStore : IDisposable
     public int ClearClips(bool keepPinned)
     {
         var removed = new List<string>();
+        int count;
         lock (_sync)
         {
             using var transaction = _connection.BeginTransaction();
@@ -504,16 +590,12 @@ public sealed class ClipStore : IDisposable
             using var delete = _connection.CreateCommand();
             delete.Transaction = transaction;
             delete.CommandText = keepPinned ? "DELETE FROM clips WHERE pinned=0" : "DELETE FROM clips";
-            var count = delete.ExecuteNonQuery();
+            count = delete.ExecuteNonQuery();
             transaction.Commit();
-            foreach (var blob in removed)
-            {
-                var name = Path.GetFileNameWithoutExtension(blob);
-                DeleteFiles(blob, "thumbs/" + name + ".jpg");
-            }
-            Bump();
-            return count;
         }
+        DeleteUnusedBlobs(removed);
+        Bump();
+        return count;
     }
 
     /// <summary>Applies retention limits after settings change.</summary>
@@ -556,14 +638,54 @@ public sealed class ClipStore : IDisposable
             delete.ExecuteNonQuery();
             transaction.Commit();
         }
-        foreach (var blob in removed)
-        {
-            var name = Path.GetFileNameWithoutExtension(blob);
-            DeleteFiles(blob, "thumbs/" + name + ".jpg");
-        }
+        DeleteUnusedBlobs(removed);
     }
 
     // ---------------------------------------------------------------- screenshots
+
+    private const int DuplicateWindowSeconds = 900;
+    private const double DuplicateDistance = 4.0;
+
+    /// <summary>
+    /// Finds a recently archived screenshot with the same size and a nearly identical picture.
+    /// Windows can deliver one screenshot both through the clipboard and as a saved file,
+    /// and the two copies rarely have identical bytes.
+    /// </summary>
+    public string? FindSimilarShot(int width, int height, byte[] preview, int windowSeconds = DuplicateWindowSeconds)
+    {
+        if (width <= 0 || height <= 0 || preview.Length == 0) return null;
+        var fingerprint = ImageFiles.Fingerprint(preview);
+        if (fingerprint is null) return null;
+        var since = Now() - Math.Max(1, windowSeconds) * 1000L;
+        var candidates = new List<(string Id, string Thumb)>();
+        lock (_sync)
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = """
+                SELECT id,thumb FROM shots
+                WHERE width=$width AND height=$height AND created_ms>=$since
+                ORDER BY created_ms DESC LIMIT 12
+                """;
+            command.Parameters.AddWithValue("$width", width);
+            command.Parameters.AddWithValue("$height", height);
+            command.Parameters.AddWithValue("$since", since);
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) candidates.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        foreach (var (id, thumb) in candidates)
+        {
+            try
+            {
+                var path = Resolve(Root, thumb);
+                if (!File.Exists(path)) continue;
+                var other = ImageFiles.Fingerprint(File.ReadAllBytes(path));
+                if (other is null) continue;
+                if (ImageFiles.Distance(fingerprint, other) <= DuplicateDistance) return id;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or OutOfMemoryException) { }
+        }
+        return null;
+    }
 
     public string? AddScreenshotFile(string sourcePath, string? source, bool enforceLimit = true)
     {
@@ -585,6 +707,10 @@ public sealed class ClipStore : IDisposable
             }
         }
 
+        var thumb = ImageFiles.Thumbnail(sourcePath);
+        var similar = FindSimilarShot(width, height, thumb);
+        if (similar is not null) return similar;
+
         var id = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + "-" + hash[..8];
         var month = DateTime.UtcNow.ToString("yyyy-MM", CultureInfo.InvariantCulture);
         var relative = $"shots/orig/{month}/{id}{extension}";
@@ -596,7 +722,6 @@ public sealed class ClipStore : IDisposable
         try
         {
             File.Copy(sourcePath, target, false);
-            var thumb = ImageFiles.Thumbnail(target);
             File.WriteAllBytes(thumbTarget, thumb);
             return InsertShot(id, relative, thumbRelative, width, height, new FileInfo(target).Length, hash,
                 source ?? "Файл", Path.GetFileName(sourcePath), enforceLimit);
@@ -613,12 +738,14 @@ public sealed class ClipStore : IDisposable
     {
         if (png.Length == 0) return null;
         int width, height;
+        byte[] thumb;
         try
         {
             using var stream = new MemoryStream(png);
             using var image = System.Drawing.Image.FromStream(stream);
             width = image.Width;
             height = image.Height;
+            thumb = ImageFiles.Thumbnail(image);
         }
         catch (Exception ex) when (ex is ArgumentException or OutOfMemoryException)
         {
@@ -632,6 +759,8 @@ public sealed class ClipStore : IDisposable
             exists.Parameters.AddWithValue("$hash", hash);
             if (exists.ExecuteScalar() is string existing) return existing;
         }
+        var similar = FindSimilarShot(width, height, thumb);
+        if (similar is not null) return similar;
         var id = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + "-" + hash[..8];
         var month = DateTime.UtcNow.ToString("yyyy-MM", CultureInfo.InvariantCulture);
         var relative = $"shots/orig/{month}/{id}.png";
@@ -643,7 +772,7 @@ public sealed class ClipStore : IDisposable
         try
         {
             File.WriteAllBytes(target, png);
-            File.WriteAllBytes(thumbTarget, ImageFiles.Thumbnail(target));
+            File.WriteAllBytes(thumbTarget, thumb);
             return InsertShot(id, relative, thumbRelative, width, height, png.Length, hash,
                 source ?? "Буфер обмена", name ?? $"Снимок {width}×{height}", enforceLimit);
         }

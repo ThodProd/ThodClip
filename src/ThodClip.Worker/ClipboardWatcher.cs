@@ -188,6 +188,7 @@ internal sealed class ClipboardWatcher : IDisposable
                 if (data is null) { Thread.Sleep(50); continue; }
                 if (_honorExclusions && IsExcluded(data)) return;
                 var source = SourceProcess();
+                if (TryImageFile(data, source, out var imageFile)) { Publish(imageFile); return; }
                 if (TryFiles(data, source, out var files)) { Publish(files); return; }
                 if (TryImage(data, source, out var image)) { Publish(image); return; }
                 if (TryText(data, source, out var text)) { Publish(text); return; }
@@ -207,6 +208,32 @@ internal sealed class ClipboardWatcher : IDisposable
         if (data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0) return false;
         payload = new ClipboardPayload { Kind = "files", Files = files, Source = source };
         return true;
+    }
+
+    /// <summary>
+    /// Some programs put a copied picture on the clipboard as a single file with a temporary
+    /// name such as {GUID}.png. Keep it as a picture so the history shows a real preview.
+    /// </summary>
+    private static bool TryImageFile(IDataObject data, string? source, out ClipboardPayload payload)
+    {
+        payload = null!;
+        try
+        {
+            if (!data.GetDataPresent(DataFormats.FileDrop)) return false;
+            if (data.GetData(DataFormats.FileDrop) is not string[] files || files.Length != 1) return false;
+            var path = files[0];
+            if (string.IsNullOrWhiteSpace(path) || !ImageFiles.IsImagePath(path) || !File.Exists(path)) return false;
+            var png = ImageFiles.TryEncodeFileAsPng(path, out var width, out var height);
+            if (png is null) return false;
+            payload = new ClipboardPayload
+            {
+                Kind = "image", Png = png, Width = width, Height = height, Source = source,
+                Files = new[] { path }
+            };
+            return true;
+        }
+        catch (Exception ex) when (ex is ExternalException or COMException or ArgumentException or OutOfMemoryException) { }
+        return false;
     }
 
     private static bool TryImage(IDataObject data, string? source, out ClipboardPayload payload)
@@ -330,21 +357,31 @@ internal sealed class ClipboardWatcher : IDisposable
 
     public Task CopyPng(byte[] png) => Invoke(() =>
     {
-        using var stream = new MemoryStream(png);
-        using var image = Image.FromStream(stream);
         Suppress();
         var data = new DataObject();
+        using var pngStream = new MemoryStream(png);
+        data.SetData("PNG", false, pngStream);
+        using var imageStream = new MemoryStream(png);
+        using var image = Image.FromStream(imageStream);
         data.SetData(DataFormats.Bitmap, true, image);
         Clipboard.SetDataObject(data, true);
     });
 
     public Task CopyFileImage(string path) => Invoke(() =>
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var image = Image.FromStream(stream);
+        byte[] png;
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var image = Image.FromStream(stream))
+        {
+            png = ImageFiles.ToPng(image);
+        }
         Suppress();
         var data = new DataObject();
-        data.SetData(DataFormats.Bitmap, true, image);
+        using var pngStream = new MemoryStream(png);
+        data.SetData("PNG", false, pngStream);
+        using var imageStream = new MemoryStream(png);
+        using var bitmap = Image.FromStream(imageStream);
+        data.SetData(DataFormats.Bitmap, true, bitmap);
         Clipboard.SetDataObject(data, true);
     });
 

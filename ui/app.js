@@ -7,7 +7,7 @@
     settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.1"/><path d="M19.3 14.6a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.8 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.7 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.54h.01A1.7 1.7 0 0 0 10 3V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.3 9v.01A1.7 1.7 0 0 0 21 10h.09a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.7 1.56Z"/></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.6-2.2L20 9M4 15l2.3 2.2A7 7 0 0 0 17.9 15"/></svg>',
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>',
-    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m6 6 12 12M18 6 6 18"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5 17.5 17.5"/><path d="M17.5 6.5 6.5 17.5"/></svg>',
     'chevron-left': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 6-6 6 6 6"/></svg>',
     'chevron-right': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 6 6 6-6 6"/></svg>',
     'chevron-down': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9.5 6 6 6-6"/></svg>',
@@ -210,6 +210,18 @@
     return message.replace(/^Error:\s*/i, '');
   }
 
+  function baseName(path) {
+    const parts = String(path || '').split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+
+  function looksTemporary(name) {
+    const value = String(name || '');
+    if (/^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?(\.[a-z0-9]{1,5})?$/i.test(value)) return true;
+    if (/^[0-9a-f]{16,}\.[a-z0-9]{1,5}$/i.test(value)) return true;
+    return /^(tmp|temp|~)[-_]/i.test(value);
+  }
+
   function setBodyOverlay() {
     const open = !dom.settingsDrawer.hidden || !dom.lightbox.hidden || !dom.modalBackdrop.hidden;
     document.body.classList.toggle('has-overlay', open);
@@ -322,15 +334,23 @@
     dom.lightboxReveal.addEventListener('click', revealLightbox);
     dom.lightboxDelete.addEventListener('click', deleteLightbox);
 
+    dom.modalConfirm.addEventListener('click', () => finishModal(true));
     dom.modalCancel.addEventListener('click', () => finishModal(false));
     dom.modalBackdrop.addEventListener('click', event => {
       if (event.target === dom.modalBackdrop) finishModal(false);
     });
 
     document.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !dom.modalBackdrop.hidden) {
+        const target = event.target;
+        if (target && target.tagName === 'BUTTON' && target !== dom.modalConfirm) return;
+        event.preventDefault();
+        finishModal(true);
+        return;
+      }
       if (event.key !== 'Escape') return;
-      if (!dom.lightbox.hidden) { event.preventDefault(); closeLightbox(); return; }
       if (!dom.modalBackdrop.hidden) { event.preventDefault(); finishModal(false); return; }
+      if (!dom.lightbox.hidden) { event.preventDefault(); closeLightbox(); return; }
       if (!dom.settingsDrawer.hidden) { event.preventDefault(); closeSettings(); }
     });
 
@@ -567,7 +587,12 @@
     main.append(meta);
 
     if (item.kind === 'image') {
+      const name = (item.files || []).map(baseName).find(value => value && !looksTemporary(value)) || '';
       const text = el('p', 'clip-text', `Изображение ${formatNumber(item.width)} × ${formatNumber(item.height)} · ${formatBytes(item.bytes)}`);
+      if (name) {
+        text.textContent = `${name} · ${formatNumber(item.width)} × ${formatNumber(item.height)} · ${formatBytes(item.bytes)}`;
+        text.title = item.files[0];
+      }
       main.append(text);
       if (item.thumb) {
         const thumb = el('button', 'clip-thumb');

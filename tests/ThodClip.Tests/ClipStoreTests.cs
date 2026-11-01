@@ -35,6 +35,19 @@ internal static class TestImages
         bitmap.Save(stream, ImageFormat.Png);
         return stream.ToArray();
     }
+
+    public static byte[] PngWithDot(Color color, Color dot, int width = 48, int height = 32)
+    {
+        using var bitmap = new Bitmap(width, height);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.Clear(color);
+            graphics.FillRectangle(new SolidBrush(dot), 1, 1, 2, 2);
+        }
+        using var stream = new MemoryStream();
+        bitmap.Save(stream, ImageFormat.Png);
+        return stream.ToArray();
+    }
 }
 
 public sealed class ClipStoreTests
@@ -226,5 +239,52 @@ public sealed class ClipStoreTests
         using var store = root.Open(settings);
         store.AddScreenshotPng(TestImages.Png(Color.Red), null);
         Assert.Equal(0, store.GetStats().ShotCount);
+    }
+
+    [Fact]
+    public void Visually_identical_screenshots_with_different_bytes_are_merged()
+    {
+        using var root = new TestRoot();
+        using var store = root.Open();
+        var first = store.AddScreenshotPng(TestImages.Png(Color.SteelBlue, 320, 200), "Snipping Tool");
+        var second = store.AddScreenshotPng(TestImages.PngWithDot(Color.SteelBlue, Color.Black, 320, 200), "Печать экрана");
+
+        Assert.NotNull(first);
+        Assert.Equal(first, second);
+        Assert.Equal(1, store.GetStats().ShotCount);
+    }
+
+    [Fact]
+    public void Copied_picture_keeps_original_name_and_thumbnail()
+    {
+        using var root = new TestRoot();
+        using var store = root.Open();
+        var path = Path.Combine(root.Root, "photo.png");
+        File.WriteAllBytes(path, TestImages.Png(Color.DarkOrchid, 120, 80));
+
+        var id = store.AddImage(TestImages.Png(Color.DarkOrchid, 120, 80), 120, 80, "explorer", [path]);
+        var item = store.GetClip(id)!;
+
+        Assert.Equal("image", item.Kind);
+        Assert.Equal(path, Assert.Single(item.Files));
+        Assert.NotNull(store.ThumbnailFor(item));
+        Assert.True(File.Exists(store.ResolveBlob(item)));
+    }
+
+    [Fact]
+    public void Picture_file_entries_are_upgraded_to_image_previews()
+    {
+        using var root = new TestRoot();
+        using var store = root.Open();
+        var path = Path.Combine(root.Root, "picture.png");
+        File.WriteAllBytes(path, TestImages.Png(Color.Olive, 96, 64));
+        var id = store.AddFiles([path], "explorer");
+
+        Assert.Equal(1, store.UpgradeImageFileClips());
+        var item = store.GetClip(id)!;
+        Assert.Equal("image", item.Kind);
+        Assert.Equal(96, item.Width);
+        Assert.NotNull(store.ThumbnailFor(item));
+        Assert.True(File.Exists(store.ResolveBlob(item)));
     }
 }

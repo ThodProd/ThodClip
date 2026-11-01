@@ -12,8 +12,21 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $name = "$($manifest.id)-$($manifest.version)-win-x64.zip"
 $zip = Join-Path $OutputDirectory $name
 if (Test-Path -LiteralPath $zip) { throw "Package already exists: $zip" }
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path -LiteralPath $PackageDirectory).Path, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+$rootPath = (Resolve-Path -LiteralPath $PackageDirectory).Path
+$archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    # Entry names must use '/' and must not contain the parent folder.
+    Get-ChildItem -LiteralPath $rootPath -Recurse -File | Sort-Object FullName | ForEach-Object {
+        $relative = $_.FullName.Substring($rootPath.Length + 1).Replace('\', '/')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $archive, $_.FullName, $relative, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+}
+finally {
+    $archive.Dispose()
+}
 $release = [ordered]@{
     version = $manifest.version
     packageUrl = "https://github.com/$Repository/releases/download/hub-v$($manifest.version)/$name"

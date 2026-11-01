@@ -40,7 +40,19 @@ internal sealed class Engine : IAsyncDisposable
     {
         _clipboard.Start();
         _screenshots.Start();
-        _ = Task.Run(() => _store.VerifyShots());
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                _store.VerifyShots();
+                var upgraded = _store.UpgradeImageFileClips();
+                if (upgraded > 0) Log.Info($"converted {upgraded} copied picture entries to previews");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("history maintenance failed: " + ex.Message);
+            }
+        });
         if (_settings.AutoImportScreenshots) StartImport();
         Log.Info($"started: data={_root}, clips={_store.GetStats().ClipCount}");
     }
@@ -59,7 +71,8 @@ internal sealed class Engine : IAsyncDisposable
             {
                 "text" => _store.AddText(payload.Text, payload.Source),
                 "files" => _store.AddFiles(payload.Files, payload.Source),
-                "image" when payload.Png is not null => _store.AddImage(payload.Png, payload.Width, payload.Height, payload.Source),
+                "image" when payload.Png is not null => _store.AddImage(payload.Png, payload.Width, payload.Height,
+                    payload.Source, payload.Files),
                 _ => 0
             };
             if (id > 0)
@@ -67,7 +80,7 @@ internal sealed class Engine : IAsyncDisposable
                 _lastCaptureMs = Now();
                 Log.Info($"captured {payload.Kind} ({payload.Png?.Length ?? payload.Text.Length} bytes) from {payload.Source ?? "unknown"}");
             }
-            if (payload.Kind == "image" && payload.Png is not null && LooksLikeScreenshot(payload))
+            if (payload.Kind == "image" && payload.Png is not null && payload.Files.Length == 0 && LooksLikeScreenshot(payload))
             {
                 var source = string.IsNullOrWhiteSpace(payload.Source) ? "Буфер обмена" : "Буфер обмена · " + payload.Source;
                 var shot = _store.AddScreenshotPng(payload.Png, source, $"Снимок {payload.Width}×{payload.Height}");
