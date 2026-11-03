@@ -83,6 +83,9 @@ public sealed class ClipSettings
     public long MaxScreenshotBytes { get; set; }
     public bool AutoImportScreenshots { get; set; } = true;
 
+    /// <summary>Keep capturing after ThodHUB closes and start the worker at Windows logon.</summary>
+    public bool RunInBackground { get; set; }
+
     public ClipSettings Clone() => (ClipSettings)MemberwiseClone();
 
     public void Sanitize()

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows.Forms;
 using ThodClip.Core;
@@ -14,24 +15,29 @@ internal sealed class Engine : IAsyncDisposable
     private readonly ClipStore _store;
     private readonly ClipboardWatcher _clipboard;
     private readonly ScreenshotWatcher _screenshots;
+    private readonly CaptureLease _captureLease;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _importGate = new(1, 1);
     private readonly object _stateGate = new();
+    private readonly bool _background;
     private Task? _importTask;
     private ImportSummary? _lastImport;
     private string? _lastImportError;
-    private bool _importRunning;
+    private volatile bool _importRunning;
+    private volatile bool _ownsCapture;
     private long _lastCaptureMs;
     private long _lastShotMs;
     private readonly string _startedAt = DateTimeOffset.UtcNow.ToString("O");
 
-    public Engine(string dataDir)
+    public Engine(string dataDir, bool background = false)
     {
         _root = Path.GetFullPath(dataDir);
+        _background = background;
         _settings = SettingsStore.Load(_root);
         _store = new ClipStore(_root, _settings);
-        _clipboard = new ClipboardWatcher(_settings.HonorClipboardExclusions) { CaptureEnabled = _settings.CaptureEnabled };
-        _screenshots = new ScreenshotWatcher(_store);
+        _captureLease = new CaptureLease(InstanceNames.CaptureMutex(_root));
+        _clipboard = new ClipboardWatcher(_settings.HonorClipboardExclusions) { CaptureEnabled = false };
+        _screenshots = new ScreenshotWatcher(_store) { CaptureEnabled = false };
         _clipboard.Captured += OnCaptured;
         _screenshots.Imported += _ => _lastShotMs = Now();
     }
@@ -40,23 +46,98 @@ internal sealed class Engine : IAsyncDisposable
     {
         _clipboard.Start();
         _screenshots.Start();
-        _ = Task.Run(() =>
+        _ = Task.Run(MaintenanceAsync);
+        _ = Task.Run(CaptureLeaseLoopAsync);
+        Log.Info($"started: data={_root}, background={_background}, clips={_store.GetStats().ClipCount}");
+    }
+
+    private async Task CaptureLeaseLoopAsync()
+    {
+        while (!_lifetime.IsCancellationRequested)
+        {
+            if (!_ownsCapture && _captureLease.TryAcquire())
+            {
+                _ownsCapture = true;
+                ApplyCaptureGating();
+                Log.Info(_background ? "background capture acquired" : "in-hub capture acquired");
+                if (_settings.AutoImportScreenshots) StartImport();
+            }
+            try { await Task.Delay(1500, _lifetime.Token); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    private async Task MaintenanceAsync()
+    {
+        try
+        {
+            _store.VerifyShots();
+            var upgraded = _store.UpgradeImageFileClips();
+            if (upgraded > 0) Log.Info($"converted {upgraded} copied picture entries to previews");
+            var references = _store.UpgradeImageReferenceClips();
+            if (references > 0) Log.Info($"resolved {references} picture-name entries to previews");
+            ArchivePendingClipboardScreenshots();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("history maintenance failed: " + ex.Message);
+        }
+
+        if (!_background && _settings.RunInBackground)
         {
             try
             {
-                _store.VerifyShots();
-                var upgraded = _store.UpgradeImageFileClips();
-                if (upgraded > 0) Log.Info($"converted {upgraded} copied picture entries to previews");
-                var references = _store.UpgradeImageReferenceClips();
-                if (references > 0) Log.Info($"resolved {references} picture-name entries to previews");
+                Autostart.Apply(true, _root);
+                Log.Info("background mode verified");
             }
             catch (Exception ex)
             {
-                Log.Warn("history maintenance failed: " + ex.Message);
+                Log.Warn("cannot verify background mode: " + ex.Message);
             }
-        });
-        if (_settings.AutoImportScreenshots) StartImport();
-        Log.Info($"started: data={_root}, clips={_store.GetStats().ClipCount}");
+        }
+    }
+
+    /// <summary>
+    /// Older builds stored Snipping Tool captures only in the clipboard history. Recover them once
+    /// the screenshot detector knows about ScreenClip temporary files.
+    /// </summary>
+    private void ArchivePendingClipboardScreenshots()
+    {
+        var page = _store.QueryClips(null, "image", false, null, 0, 200);
+        var before = _store.GetStats().ShotCount;
+        foreach (var clip in page.Items)
+        {
+            if (clip.Files.Count == 0) continue;
+            if (!clip.Files.Any(file => ScreenshotScanner.IsScreenshotPath(file))) continue;
+            try
+            {
+                var path = _store.ResolveBlob(clip);
+                if (!File.Exists(path)) continue;
+
+                // Hash the blob without loading it first: on later starts every recovered image is
+                // already in the archive and should not be read into memory again.
+                string hash;
+                using (var stream = File.OpenRead(path))
+                    hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+                if (_store.ShotHashExists(hash)) continue;
+
+                var source = string.IsNullOrWhiteSpace(clip.Source) ? "Буфер обмена" : "Буфер обмена · " + clip.Source;
+                _store.AddScreenshotPng(File.ReadAllBytes(path), source, $"Снимок {clip.Width}×{clip.Height}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                Log.Warn("cannot recover clipboard screenshot: " + ex.Message);
+            }
+        }
+        var added = _store.GetStats().ShotCount - before;
+        if (added > 0) Log.Info($"archived {added} earlier clipboard screenshots");
+    }
+
+    private void ApplyCaptureGating()
+    {
+        var capture = _ownsCapture && _settings.CaptureEnabled;
+        _clipboard.CaptureEnabled = capture;
+        _screenshots.CaptureEnabled = capture;
     }
 
     private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -82,7 +163,7 @@ internal sealed class Engine : IAsyncDisposable
                 _lastCaptureMs = Now();
                 Log.Info($"captured {payload.Kind} ({payload.Png?.Length ?? payload.Text.Length} bytes) from {payload.Source ?? "unknown"}");
             }
-            if (payload.Kind == "image" && payload.Png is not null && payload.Files.Length == 0 && LooksLikeScreenshot(payload))
+            if (payload.Kind == "image" && payload.Png is not null && LooksLikeScreenshot(payload))
             {
                 var source = string.IsNullOrWhiteSpace(payload.Source) ? "Буфер обмена" : "Буфер обмена · " + payload.Source;
                 var shot = _store.AddScreenshotPng(payload.Png, source, $"Снимок {payload.Width}×{payload.Height}");
@@ -97,22 +178,23 @@ internal sealed class Engine : IAsyncDisposable
 
     private static bool LooksLikeScreenshot(ClipboardPayload payload)
     {
-        if (Environment.GetEnvironmentVariable("THODCLIP_ARCHIVE_ALL_IMAGES") == "1") return true;
-        var source = (payload.Source ?? "").ToLowerInvariant();
-        if (source.Contains("snip") || source.Contains("screenclip") || source.Contains("screenshot")) return true;
+        var archiveAll = Environment.GetEnvironmentVariable("THODCLIP_ARCHIVE_ALL_IMAGES") == "1";
         try
         {
             var screen = Screen.PrimaryScreen?.Bounds ?? Rectangle.Empty;
-            if (screen.Width <= 0 || screen.Height <= 0) return false;
-            var sameSize = Math.Abs(payload.Width - screen.Width) <= 2 && Math.Abs(payload.Height - screen.Height) <= 2;
-            var sameArea = (long)payload.Width * payload.Height >= (long)screen.Width * screen.Height * 85 / 100;
-            return sameSize || sameArea;
+            return ScreenshotDetector.IsLikelyScreenshot(payload.Files, payload.Source, payload.Width, payload.Height,
+                screen.Width, screen.Height, archiveAll);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return ScreenshotDetector.IsLikelyScreenshot(payload.Files, payload.Source, payload.Width, payload.Height,
+                0, 0, archiveAll);
+        }
     }
 
-    private bool StartImport()
+    private bool StartImport(bool force = false)
     {
+        if (!force && !_ownsCapture) return false;
         lock (_stateGate)
         {
             if (_importTask is { IsCompleted: false }) return false;
@@ -187,6 +269,7 @@ internal sealed class Engine : IAsyncDisposable
     private object Status()
     {
         var stats = _store.GetStats();
+        var backgroundRunning = Autostart.IsBackgroundRunning(_root);
         lock (_stateGate)
         {
             return new
@@ -196,7 +279,11 @@ internal sealed class Engine : IAsyncDisposable
                 dataDir = _root,
                 startedAt = _startedAt,
                 captureEnabled = _settings.CaptureEnabled,
-                captureActive = _clipboard.IsRunning,
+                captureActive = _settings.CaptureEnabled &&
+                                (_ownsCapture ? _clipboard.IsRunning : backgroundRunning),
+                captureOwner = _ownsCapture ? "hub" : backgroundRunning ? "background" : "none",
+                runInBackground = _settings.RunInBackground,
+                backgroundRunning,
                 honorExclusions = _settings.HonorClipboardExclusions,
                 dedupeSeconds = _settings.DedupeSeconds,
                 folders = ScreenshotScanner.KnownDirectories(),
@@ -467,7 +554,7 @@ internal sealed class Engine : IAsyncDisposable
 
     private object ShotImport()
     {
-        var started = StartImport();
+        var started = StartImport(force: true);
         return new { started, message = started ? "Импорт запущен." : "Импорт уже выполняется." };
     }
 
@@ -478,14 +565,34 @@ internal sealed class Engine : IAsyncDisposable
         if (Try(source, "captureEnabled", out var capture)) next.CaptureEnabled = capture.ValueKind == JsonValueKind.True;
         if (Try(source, "honorClipboardExclusions", out var honor)) next.HonorClipboardExclusions = honor.ValueKind == JsonValueKind.True;
         if (Try(source, "autoImportScreenshots", out var auto)) next.AutoImportScreenshots = auto.ValueKind == JsonValueKind.True;
+        if (Try(source, "runInBackground", out var run)) next.RunInBackground = run.ValueKind == JsonValueKind.True;
         if (Try(source, "dedupeSeconds", out var dedupe) && dedupe.TryGetInt32(out var dedupeValue)) next.DedupeSeconds = dedupeValue;
         if (Try(source, "maxClips", out var maxClips) && maxClips.TryGetInt32(out var maxClipsValue)) next.MaxClips = maxClipsValue;
         if (Try(source, "maxTextBytes", out var maxText) && maxText.TryGetInt32(out var maxTextValue)) next.MaxTextBytes = maxTextValue;
         if (Try(source, "maxScreenshotBytes", out var maxShots) && maxShots.TryGetInt64(out var maxShotsValue)) next.MaxScreenshotBytes = maxShotsValue;
         next.Sanitize();
+        var backgroundChanged = next.RunInBackground != _settings.RunInBackground;
         SettingsStore.Save(_root, next);
         ApplySettings(next);
         _store.PruneNow();
+        if (backgroundChanged)
+        {
+            try
+            {
+                Autostart.Apply(next.RunInBackground, _root);
+            }
+            catch (Exception ex)
+            {
+                if (next.RunInBackground)
+                {
+                    next.RunInBackground = false;
+                    SettingsStore.Save(_root, next);
+                    ApplySettings(next);
+                    try { Autostart.Apply(false, _root); } catch { }
+                }
+                throw new RpcException(-32000, "Не удалось настроить фоновый режим: " + ex.Message);
+            }
+        }
         return new { settings = _settings, dataDir = _root };
     }
 
@@ -494,8 +601,17 @@ internal sealed class Engine : IAsyncDisposable
         var enabled = Bool(parameters, "enabled", _settings.CaptureEnabled);
         _settings.CaptureEnabled = enabled;
         SettingsStore.Save(_root, _settings);
-        _clipboard.CaptureEnabled = enabled;
+        ApplyCaptureGating();
         return new { captureEnabled = enabled };
+    }
+
+    /// <summary>Applies a settings file changed by another process while the background worker runs.</summary>
+    public void ReloadSettings(ClipSettings next)
+    {
+        var autoImport = !_settings.AutoImportScreenshots && next.AutoImportScreenshots;
+        ApplySettings(next);
+        if (autoImport && _ownsCapture) StartImport();
+        _store.PruneNow();
     }
 
     private void ApplySettings(ClipSettings next)
@@ -503,11 +619,12 @@ internal sealed class Engine : IAsyncDisposable
         _settings.CaptureEnabled = next.CaptureEnabled;
         _settings.HonorClipboardExclusions = next.HonorClipboardExclusions;
         _settings.AutoImportScreenshots = next.AutoImportScreenshots;
+        _settings.RunInBackground = next.RunInBackground;
         _settings.DedupeSeconds = next.DedupeSeconds;
         _settings.MaxClips = next.MaxClips;
         _settings.MaxTextBytes = next.MaxTextBytes;
         _settings.MaxScreenshotBytes = next.MaxScreenshotBytes;
-        _clipboard.CaptureEnabled = next.CaptureEnabled;
+        ApplyCaptureGating();
     }
 
     private static string? DataUrl(string path, string mime, long limit)
@@ -571,6 +688,8 @@ internal sealed class Engine : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync();
+        _captureLease.Dispose();
+        _ownsCapture = false;
         _clipboard.Dispose();
         _screenshots.Dispose();
         try

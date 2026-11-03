@@ -5,7 +5,7 @@ namespace ThodClip.Core;
 /// <summary>Finds screenshots in the folders Windows and Snipping Tool normally use.</summary>
 public static partial class ScreenshotScanner
 {
-    [GeneratedRegex(@"(?ix)(screenshot|screen[\s_-]?shot|snip|снимок(\s+экрана)?|скрин(шот)?|print[\s_-]?screen|screencap|capture)")]
+    [GeneratedRegex(@"(?ix)(screenshot|screen[\s_-]?shot|screen[\s_-]?clip|screen[\s_-]?snip|snip|sketch|снимок(\s+экрана)?|скрин(шот)?|print[\s_-]?screen|screencap|capture)")]
     private static partial Regex ScreenshotName();
 
     public static IReadOnlyList<string> KnownDirectories()
@@ -32,11 +32,50 @@ public static partial class ScreenshotScanner
         Add(Path.Combine(profile, "Pictures"));
         Add(Path.Combine(profile, "OneDrive", "Pictures"));
         Add(Path.Combine(profile, "Downloads"));
+        foreach (var screenClip in ScreenClipDirectories())
+        {
+            Add(screenClip);
+        }
         foreach (var extra in ExtraDirectories())
         {
             if (Directory.Exists(extra)) Add(extra);
         }
         return candidates;
+    }
+
+    /// <summary>
+    /// Snipping Tool keeps its clippings in a temporary package folder. Watching it as well means
+    /// a screenshot is archived even when the clipboard delivers only a temporary file path.
+    /// </summary>
+    private static IEnumerable<string> ScreenClipDirectories()
+    {
+        var packages = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Packages");
+        if (!Directory.Exists(packages)) yield break;
+
+        string[] entries;
+        try
+        {
+            entries = Directory.GetDirectories(packages);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            yield break;
+        }
+
+        foreach (var package in entries)
+        {
+            var name = Path.GetFileName(package);
+            var isScreenSketch = name.StartsWith("Microsoft.ScreenSketch_", StringComparison.OrdinalIgnoreCase);
+            var isSnippingTool = name.StartsWith("Microsoft.SnippingTool_", StringComparison.OrdinalIgnoreCase);
+            var isClientCore = name.StartsWith("MicrosoftWindows.Client.Core_", StringComparison.OrdinalIgnoreCase);
+            if (!isScreenSketch && !isSnippingTool && !isClientCore) continue;
+
+            var temp = Path.Combine(package, "TempState");
+            if (isScreenSketch || isSnippingTool) yield return temp;
+            var screenClip = Path.Combine(temp, "ScreenClip");
+            if (Directory.Exists(screenClip)) yield return screenClip;
+        }
     }
 
     public static IReadOnlyList<string> ExtraDirectories() =>
@@ -48,11 +87,41 @@ public static partial class ScreenshotScanner
     public static bool IsScreenshot(string path)
     {
         if (!File.Exists(path) || !ImageFiles.IsImagePath(path)) return false;
-        var full = Path.GetFullPath(path);
+        return IsScreenshotPath(path);
+    }
+
+    /// <summary>Classifies a path without opening the file, so a temporary clipboard path still works.</summary>
+    public static bool IsScreenshotPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !ImageFiles.IsImagePath(path)) return false;
+        string full;
+        try { full = Path.GetFullPath(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
         if (ExtraDirectories().Any(d => IsInside(d, full))) return true;
+        if (IsScreenClipPath(full)) return true;
+
         var parent = Path.GetFileName(Path.GetDirectoryName(full) ?? "");
-        if (parent.Equals("Screenshots", StringComparison.OrdinalIgnoreCase)) return true;
+        if (parent.Equals("Screenshots", StringComparison.OrdinalIgnoreCase) ||
+            parent.Equals("ScreenClip", StringComparison.OrdinalIgnoreCase) ||
+            parent.Equals("ScreenClips", StringComparison.OrdinalIgnoreCase) ||
+            parent.Equals("ScreenSketch", StringComparison.OrdinalIgnoreCase))
+            return true;
         return ScreenshotName().IsMatch(Path.GetFileNameWithoutExtension(path));
+    }
+
+    private static bool IsScreenClipPath(string full)
+    {
+        var directory = Path.GetDirectoryName(full) ?? "";
+        if (directory.Contains(@"\TempState\ScreenClip", StringComparison.OrdinalIgnoreCase)) return true;
+        if (directory.Contains(@"\TempState\ScreenSketch", StringComparison.OrdinalIgnoreCase)) return true;
+        if (directory.Contains(@"\Microsoft.ScreenSketch_", StringComparison.OrdinalIgnoreCase) &&
+            directory.Contains(@"\TempState", StringComparison.OrdinalIgnoreCase)) return true;
+        if (directory.Contains(@"\Microsoft.SnippingTool_", StringComparison.OrdinalIgnoreCase) &&
+            directory.Contains(@"\TempState", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     public static ImportSummary Import(ClipStore store, CancellationToken cancellationToken)

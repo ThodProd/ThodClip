@@ -87,8 +87,8 @@
       'dayBanner', 'dayBannerText', 'dayBannerClear', 'newItems', 'newItemsRefresh', 'shotsGrid', 'shotsEmpty',
       'loadMoreShots', 'shotsTotalLabel', 'importShots', 'openShotsFolder', 'importShotsEmpty',
       'drawerBackdrop', 'settingsDrawer', 'settingsClose', 'settingsForm', 'setCaptureEnabled', 'setHonorExclusions',
-      'setAutoImport', 'setDedupe', 'setMaxClips', 'setMaxText', 'setMaxShots', 'folderList', 'importFromSettings',
-      'aboutVersion', 'aboutDataDir', 'aboutStorage', 'settingsOpenFolder', 'settingsImport', 'settingsClearClips',
+      'setAutoImport', 'setRunInBackground', 'setDedupe', 'setMaxClips', 'setMaxText', 'setMaxShots', 'folderList',
+      'importFromSettings', 'aboutVersion', 'aboutBackground', 'aboutDataDir', 'aboutStorage', 'settingsOpenFolder', 'settingsImport', 'settingsClearClips',
       'settingsClearShots', 'saveSettings', 'cancelSettings', 'modalBackdrop', 'modalTitle', 'modalText',
       'modalCheckWrap', 'modalCheck', 'modalCheckLabel', 'modalCancel', 'modalConfirm', 'lightbox', 'lightboxTitle',
       'lightboxMeta', 'lightboxStage', 'lightboxImage', 'lightboxLoader', 'lightboxNote', 'lightboxClose',
@@ -377,6 +377,7 @@
     updateCounts(status);
 
     if (dom.aboutVersion) dom.aboutVersion.textContent = status.version || '—';
+    if (dom.aboutBackground) dom.aboutBackground.textContent = backgroundStatusText(status);
     if (dom.aboutDataDir) {
       dom.aboutDataDir.textContent = status.dataDir || '—';
       dom.aboutDataDir.title = status.dataDir || '';
@@ -425,12 +426,22 @@
     }, 320);
   }
 
+  function backgroundStatusText(status) {
+    if (!status) return '—';
+    if (!status.runInBackground) return 'Выключена';
+    if (status.backgroundRunning) return 'Работает';
+    return 'Включена, ожидает запуска';
+  }
+
   function updateCapturePill(status) {
     const enabled = !!status.captureEnabled;
     const active = status.captureActive !== false;
+    const owner = status.captureOwner === 'background' ? 'фоновая запись' : status.captureOwner === 'hub' ? 'ThodHUB' : '';
     dom.capturePill.classList.toggle('is-off', !enabled || !active);
     dom.captureLabel.textContent = !enabled ? 'Запись выключена' : active ? 'Запись включена' : 'Запись не активна';
-    dom.capturePill.title = enabled ? 'Выключить запись буфера обмена' : 'Включить запись буфера обмена';
+    dom.capturePill.title = !enabled
+      ? 'Включить запись буфера обмена'
+      : owner ? `Выключить запись буфера обмена · сейчас: ${owner}` : 'Выключить запись буфера обмена';
   }
 
   function updateCounts(status) {
@@ -1150,6 +1161,7 @@
     dom.setCaptureEnabled.checked = !!settings.captureEnabled;
     dom.setHonorExclusions.checked = !!settings.honorClipboardExclusions;
     dom.setAutoImport.checked = !!settings.autoImportScreenshots;
+    dom.setRunInBackground.checked = !!settings.runInBackground;
     dom.setDedupe.value = settings.dedupeSeconds;
     dom.setMaxClips.value = settings.maxClips;
     dom.setMaxText.value = Math.round(settings.maxTextBytes / 1024);
@@ -1157,6 +1169,7 @@
     if (status) renderFolders(status.folders || []);
     if (status && dom.aboutVersion) {
       dom.aboutVersion.textContent = status.version || '—';
+      if (dom.aboutBackground) dom.aboutBackground.textContent = backgroundStatusText(status);
       dom.aboutDataDir.textContent = status.dataDir || '—';
       dom.aboutDataDir.title = status.dataDir || '';
       dom.aboutStorage.textContent = formatBytes(status.storageBytes);
@@ -1205,6 +1218,7 @@
       captureEnabled: dom.setCaptureEnabled.checked,
       honorClipboardExclusions: dom.setHonorExclusions.checked,
       autoImportScreenshots: dom.setAutoImport.checked,
+      runInBackground: dom.setRunInBackground.checked,
       dedupeSeconds: Number.parseInt(dom.setDedupe.value, 10) || 0,
       maxClips: Number.parseInt(dom.setMaxClips.value, 10) || 0,
       maxTextBytes: (Number.parseInt(dom.setMaxText.value, 10) || 1024) * 1024,
@@ -1223,6 +1237,7 @@
       await Promise.all([loadStatus(), loadCalendar(), loadClips(0)]);
     } catch (error) {
       showToast('Не удалось сохранить: ' + errorText(error), { error: true });
+      await Promise.all([loadSettings(), loadStatus()]);
     } finally {
       dom.saveSettings.disabled = false;
       dom.saveSettings.innerHTML = original;

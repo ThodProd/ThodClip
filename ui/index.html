@@ -4,12 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ThodClip</title>
+  <script>
+    (function () {
+      var theme = 'light';
+      try {
+        var requested = new URLSearchParams(location.search).get('theme');
+        if (requested === 'light' || requested === 'dark') theme = requested;
+        else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark';
+      } catch (_) { }
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
-
   <div class="app">
     <header class="topbar">
       <div class="brand">
@@ -207,7 +215,7 @@
       <section class="settings-group">
         <h3>Запись</h3>
         <label class="switch-row">
-          <span><strong>Записывать буфер обмена</strong><small>Пока ThodHUB открыт</small></span>
+          <span><strong>Записывать буфер обмена</strong><small>Пока ThodHUB открыт или работает фоновая запись</small></span>
           <input type="checkbox" id="setCaptureEnabled">
           <i class="toggle"></i>
         </label>
@@ -221,6 +229,12 @@
           <input type="checkbox" id="setAutoImport">
           <i class="toggle"></i>
         </label>
+        <label class="switch-row">
+          <span><strong>Работать в фоне</strong><small>Запись продолжится после закрытия ThodHUB и запустится вместе с Windows</small></span>
+          <input type="checkbox" id="setRunInBackground">
+          <i class="toggle"></i>
+        </label>
+        <p class="hint">Фоновая запись запускается из кэша ThodHUB, поэтому обновления и удаление программы не блокируются. Отключение сразу останавливает фоновый процесс и убирает автозапуск.</p>
       </section>
 
       <section class="settings-group">
@@ -258,6 +272,7 @@
       <section class="settings-group">
         <h3>Данные</h3>
         <div class="settings-line"><span>Версия</span><strong id="aboutVersion">—</strong></div>
+        <div class="settings-line"><span>Фоновая запись</span><strong id="aboutBackground">—</strong></div>
         <div class="settings-line"><span>Папка данных</span><code id="aboutDataDir">—</code></div>
         <div class="settings-line"><span>Занято</span><strong id="aboutStorage">—</strong></div>
         <div class="drawer-actions">

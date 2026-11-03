@@ -16,6 +16,9 @@ internal sealed class ScreenshotWatcher : IDisposable
 
     public event Action<string>? Imported;
 
+    /// <summary>False while another process owns capture; watchers stay alive but ignore events.</summary>
+    public bool CaptureEnabled { get; set; } = true;
+
     public ScreenshotWatcher(ClipStore store) => _store = store;
 
     public IReadOnlyList<string> Folders => ScreenshotScanner.KnownDirectories();
@@ -49,6 +52,7 @@ internal sealed class ScreenshotWatcher : IDisposable
 
     private void Enqueue(string path)
     {
+        if (!CaptureEnabled) return;
         if (!ImageFiles.IsImagePath(path) || !ScreenshotScanner.IsScreenshot(path)) return;
         var now = Environment.TickCount64;
         if (_seen.TryGetValue(path, out var last) && now - last < 4000) return;
@@ -64,6 +68,7 @@ internal sealed class ScreenshotWatcher : IDisposable
             {
                 try
                 {
+                    if (!CaptureEnabled) continue;
                     if (!ScreenshotScanner.IsScreenshot(path)) continue;
                     if (!ScreenshotScanner.IsStable(path, attempts: 8)) continue;
                     var folder = Path.GetFileName(Path.GetDirectoryName(path) ?? "") ?? "Скриншоты";
