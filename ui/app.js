@@ -62,6 +62,7 @@
     calendarPending: false,
     settings: null,
     settingsDataDir: '',
+    settingsSaving: false,
     status: null,
     captureEnabled: true,
     expanded: new Set(),
@@ -287,6 +288,9 @@
     dom.cancelSettings.addEventListener('click', closeSettings);
     dom.drawerBackdrop.addEventListener('click', closeSettings);
     dom.settingsForm.addEventListener('submit', saveSettings);
+    // Also handle the button directly: a submit can be blocked by browser validation
+    // or by an overlay, which should never make Save look unresponsive.
+    dom.saveSettings.addEventListener('click', saveSettings);
 
     dom.calendarPrev.addEventListener('click', () => shiftCalendar(-1));
     dom.calendarNext.addEventListener('click', () => shiftCalendar(1));
@@ -1214,6 +1218,8 @@
 
   async function saveSettings(event) {
     event.preventDefault();
+    if (state.settingsSaving) return;
+    state.settingsSaving = true;
     const payload = {
       captureEnabled: dom.setCaptureEnabled.checked,
       honorClipboardExclusions: dom.setHonorExclusions.checked,
@@ -1239,6 +1245,7 @@
       showToast('Не удалось сохранить: ' + errorText(error), { error: true });
       await Promise.all([loadSettings(), loadStatus()]);
     } finally {
+      state.settingsSaving = false;
       dom.saveSettings.disabled = false;
       dom.saveSettings.innerHTML = original;
       hydrateIcons(dom.saveSettings);

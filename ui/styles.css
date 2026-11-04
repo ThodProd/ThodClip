@@ -980,7 +980,7 @@ input:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 .drawer-head h2 { margin: 0; font-size: 21px; letter-spacing: -0.4px; }
-.drawer-body { flex: 1; overflow: auto; padding: 17px 20px 26px; }
+.drawer-body { flex: 1; overflow: auto; padding: 17px 20px 0; }
 .settings-group { padding: 0 0 17px; margin-bottom: 17px; border-bottom: 1px solid var(--line); }
 .settings-group h3 { margin: 0 0 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.1px; color: var(--muted); }
 .settings-group:last-of-type { border-bottom: 0; }
@@ -1087,11 +1087,16 @@ input:focus-visible {
 }
 .drawer-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
 .drawer-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   gap: 8px;
-  padding: 14px 20px;
+  margin: 0 -20px;
+  padding: 14px 20px calc(14px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--line);
   background: var(--surface-solid);
+  box-shadow: 0 -10px 22px rgba(0, 0, 0, 0.14);
 }
 
 /* ------------------------------------------------------------------ modal */

@@ -85,7 +85,7 @@ shots/thumb/            превью скриншотов
 
 ```powershell
 dotnet test .\tests\ThodClip.Tests\ThodClip.Tests.csproj -c Release
-.\scripts\build.ps1 -Version 1.1.0
+.\scripts\build.ps1 -Version 1.1.1
 ```
 
 `scripts/build.ps1`:
@@ -100,7 +100,7 @@ dotnet test .\tests\ThodClip.Tests\ThodClip.Tests.csproj -c Release
 Для локальной проверки без упаковки:
 
 ```powershell
-.\scripts\build.ps1 -Version 1.1.0 -SkipPackage
+.\scripts\build.ps1 -Version 1.1.1 -SkipPackage
 ```
 
 ### CI и релиз
