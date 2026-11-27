@@ -81,59 +81,42 @@ shots/thumb/            превью скриншотов
 
 ## Сборка
 
-Требования: Windows x64, .NET SDK 10.0.4xx, PowerShell 7+ (или Windows PowerShell 5.1), Node.js не обязателен.
+Требования: Windows x64, Rust stable через rustup, компоновщик MSVC или MinGW x64 и PowerShell.
 
 ```powershell
-dotnet test .\tests\ThodClip.Tests\ThodClip.Tests.csproj -c Release
-.\scripts\build.ps1 -Version 1.1.1
+rustup target add wasm32-unknown-unknown
+$version = (Select-String -Path Cargo.lock -Pattern '^name = "wasm-bindgen"$' -Context 0,1).Context.PostContext -replace '^version = "(.+)"$','$1'
+cargo install wasm-bindgen-cli --version $version --locked
+cargo test --locked -p thodclip-worker --release
+.\scripts\build.ps1
 ```
 
-`scripts/build.ps1`:
+Скрипт собирает нативный worker для Windows x64 и интерфейс Rust для WebAssembly. В готовый модуль входят HTML, CSS и мост ThodHUB. Устанавливать Rust или .NET для запуска модуля не требуется.
 
-1. Публикует self-contained worker под `win-x64`.
-2. Копирует UI, `manifest.json`, README и лицензии.
-3. Вызывает `scripts/package-module.ps1` из контракта ThodHUB.
-4. Проверяет SHA-256 и размер ZIP против `thodhub-release.json`.
-
-Результат: `artifacts/thodclip-<version>-win-x64.zip` и `artifacts/thodhub-release.json`.
-
-Для локальной проверки без упаковки:
-
-```powershell
-.\scripts\build.ps1 -Version 1.1.1 -SkipPackage
-```
+Результат сборки: `artifacts/thodclip-<version>-win-x64.zip` и `artifacts/thodhub-release.json`. Для сборки без ZIP используйте `.\scripts\build.ps1 -SkipPackage`.
 
 ### CI и релиз
 
-GitHub Actions (`.github/workflows/release.yml`) запускается на тег `hub-vX.Y.Z`, собирает проект на `windows-latest`, прогоняет тесты, проверяет совпадение версии с тегом и создаёт **stable** GitHub Release с ZIP и `thodhub-release.json`. Существующие релизы и ассеты не перезаписываются: для изменений нужен новый тег и новая версия.
+GitHub Actions запускается на теге `hub-vX.Y.Z`. Workflow прогоняет тесты на Windows, собирает модуль, сверяет версию, размер и SHA-256 и публикует стабильный релиз с ZIP и `thodhub-release.json`.
 
-## Тесты
-
-```powershell
-dotnet test .\tests\ThodClip.Tests\ThodClip.Tests.csproj -c Release
-```
-
-Покрыты: дедупликация, поиск, закрепление, удаление, очистка, лимиты, календарные счётчики, фильтр по дню, обрезка больших текстов, архивация и дедупликация скриншотов, импорт, настройки, распознавание частичных снимков Snipping Tool и временных путей `ScreenClip`.
-
-Ручной протокол worker:
+### Ручная проверка worker
 
 ```powershell
 $env:THODHUB_DATA_DIR = "$env:TEMP\thodclip-test"
 $env:THODCLIP_SCREENSHOT_ONLY = "1"
 $env:THODCLIP_SCREENSHOT_DIRS = "$env:TEMP\thodclip-test\shots"
-'{"jsonrpc":"2.0","id":"1","method":"status"}' | .\src\ThodClip.Worker\bin\Release\net10.0-windows\ThodClip.Worker.exe
+'{"jsonrpc":"2.0","id":"1","method":"status"}' | .\artifacts\stage-1.1.2\worker\ThodClip.Worker.exe
 ```
 
 ## Структура
 
-```
+```text
 hub/manifest.json              манифест ThodHUB API 1
-ui/                            HTML/CSS/JS интерфейс
-src/ThodClip.Core/             SQLite, изображения, сканер скриншотов
-src/ThodClip.Worker/           JSON-RPC worker, буфер, наблюдатель папок
-tests/ThodClip.Tests/          xUnit-тесты
+ui/                            разметка, стили и мост ThodHUB
+frontend/                      логика интерфейса на Rust/WebAssembly
+worker/                        JSON-RPC, SQLite, буфер обмена и архив снимков на Rust
 scripts/                       сборка и упаковка
-assets/thodclip.svg            artwork для каталога
+assets/                        значок Windows и иллюстрация для каталога
 ```
 
 ## Лицензия

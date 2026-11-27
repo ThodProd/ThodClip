@@ -2,7 +2,8 @@
   "schemaVersion": 1,
   "hubApi": 1,
   "id": "thodclip",
-  "version": "1.1.1",
+  "version": "1.1.2",
+  "primaryLanguage": "Rust",
   "platform": "win-x64",
   "mode": "embedded",
   "ui": "ui/index.html",
@@ -13,6 +14,10 @@
   "integration": {
     "executable": "worker/ThodClip.Worker.exe",
     "arguments": ["--register-integrations"]
+  },
+  "stop": {
+    "executable": "worker/ThodClip.Worker.exe",
+    "arguments": ["--stop-background"]
   },
   "cleanup": {
     "executable": "worker/ThodClip.Worker.exe",

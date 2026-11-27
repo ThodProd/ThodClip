@@ -25,10 +25,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
+      - name: Set up Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          $version = (Select-String -Path Cargo.lock -Pattern '^name = "wasm-bindgen"$' -Context 0,1).Context.PostContext -replace '^version = "(.+)"$','$1'
+          cargo install wasm-bindgen-cli --version $version --locked
 
       - name: Resolve version
         id: version
@@ -51,13 +55,15 @@ jobs:
           "tag=hub-v$version" >> $env:GITHUB_OUTPUT
 
       - name: Test
-        run: dotnet test .\tests\ThodClip.Tests\ThodClip.Tests.csproj -c Release --nologo
+        run: cargo test --locked -p thodclip-worker --release
 
       - name: Build and package
         shell: pwsh
+        env:
+          RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $notes = '${{ inputs.notes }}'
+          $notes = $env:RELEASE_NOTES
           if (-not $notes) { $notes = "ThodClip $('${{ steps.version.outputs.version }}') — история буфера обмена и архив скриншотов." }
           .\scripts\build.ps1 -Version '${{ steps.version.outputs.version }}' -Notes $notes
 
@@ -93,11 +99,12 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           $ErrorActionPreference = 'Stop'
           $version = '${{ steps.version.outputs.version }}'
           $tag = '${{ steps.version.outputs.tag }}'
-          $notes = '${{ inputs.notes }}'
+          $notes = $env:RELEASE_NOTES
           if (-not $notes) { $notes = "ThodClip $version — история буфера обмена и архив скриншотов." }
           gh release create $tag `
             "artifacts/thodclip-$version-win-x64.zip" `

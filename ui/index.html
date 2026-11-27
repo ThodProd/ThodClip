@@ -4,17 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ThodClip</title>
-  <script>
-    (function () {
-      var theme = 'light';
-      try {
-        var requested = new URLSearchParams(location.search).get('theme');
-        if (requested === 'light' || requested === 'dark') theme = requested;
-        else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark';
-      } catch (_) { }
-      document.documentElement.dataset.theme = theme;
-    })();
-  </script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -334,6 +323,7 @@
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <script src="thodhub.js"></script>
-  <script src="app.js"></script>
+  <script src="thodclip.js"></script>
+  <script src="start.js"></script>
 </body>
 </html>

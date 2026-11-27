@@ -1,9 +1,9 @@
-﻿<#
+<#
   Builds ThodClip and packs it for ThodHUB.
 
   Example:
     .\scripts\build.ps1
-    .\scripts\build.ps1 -Version 1.0.2 -Notes "Что изменилось"
+    .\scripts\build.ps1 -Version 1.1.2 -Notes "Что изменилось"
 #>
 [CmdletBinding()]
 param(
@@ -29,33 +29,78 @@ if (-not $OutputDirectory) { $OutputDirectory = Join-Path $root 'artifacts' }
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $stage = Join-Path $OutputDirectory "stage-$Version"
 
+if ($Version -ne $manifest.version) { throw "Version $Version does not match the manifest ($($manifest.version))." }
+$versionLine = Select-String -LiteralPath (Join-Path $root 'Cargo.toml') -Pattern '^version = "([^"]+)"$'
+if ($versionLine.Matches[0].Groups[1].Value -ne $Version) { throw 'Cargo workspace version does not match the manifest.' }
+
+foreach ($tool in 'cargo', 'rustc', 'wasm-bindgen') {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+        $cargoBin = Join-Path $env:USERPROFILE '.cargo/bin'
+        $env:Path = "$cargoBin;$env:Path"
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "'$tool' is required. See README.md." }
+    }
+}
+$hostTarget = (& rustc -vV | Select-String '^host: (.*)$').Matches[0].Groups[1].Value
+if ($hostTarget -notin 'x86_64-pc-windows-msvc', 'x86_64-pc-windows-gnu') { throw "Windows x64 toolchain required. Found $hostTarget." }
+
 Write-Host "ThodClip $Version"
 Write-Host "Workspace: $root"
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-New-Item -ItemType Directory -Path $stage -Force | Out-Null
-
-# --- worker (self-contained) -------------------------------------------------
-$workerProject = Join-Path $root 'src\ThodClip.Worker\ThodClip.Worker.csproj'
+if (Test-Path -LiteralPath $stage) {
+    $outputPath = (Resolve-Path -LiteralPath $OutputDirectory).Path
+    $stageItem = Get-Item -LiteralPath $stage -Force
+    $prefix = $outputPath.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $stageItem.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+        ($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Invalid staging directory: $stage"
+    }
+    Remove-Item -LiteralPath $stageItem.FullName -Recurse -Force
+}
 $workerOut = Join-Path $stage 'worker'
-Write-Host 'Publishing worker (win-x64, self-contained) ...'
-& dotnet publish $workerProject `
-    -c $Configuration `
-    -r win-x64 `
-    --self-contained true `
-    -p:Version=$Version `
-    -p:DebugType=None `
-    -p:DebugSymbols=false `
-    -p:PublishSingleFile=false `
-    -o $workerOut
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
-
-# --- UI ---------------------------------------------------------------------
 $uiOut = Join-Path $stage 'ui'
-New-Item -ItemType Directory -Path $uiOut -Force | Out-Null
-foreach ($file in 'index.html', 'styles.css', 'app.js', 'thodhub.js') {
-    Copy-Item -LiteralPath (Join-Path $root "ui\$file") -Destination $uiOut -Force
+New-Item -ItemType Directory -Path $workerOut, $uiOut -Force | Out-Null
+
+Push-Location -LiteralPath $root
+try {
+    $metadata = & cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Cargo target directory.' }
+    $target = $metadata.target_directory
+    $profile = if ($Configuration -eq 'Debug') { 'debug' } else { 'release' }
+    [string[]]$profileArgs = @(if ($profile -eq 'release') { '--release' })
+
+    Write-Host "Building worker ($hostTarget) ..."
+    & cargo build --locked -p thodclip-worker --target $hostTarget @profileArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Worker build failed.' }
+    Copy-Item -LiteralPath (Join-Path $target "$hostTarget/$profile/thodclip-worker.exe") -Destination (Join-Path $workerOut 'ThodClip.Worker.exe')
+
+    Write-Host 'Building embedded UI (WebAssembly) ...'
+    & cargo build --locked -p thodclip-frontend --target wasm32-unknown-unknown @profileArgs
+    if ($LASTEXITCODE -ne 0) { throw 'UI build failed.' }
+    $wasmDir = Join-Path $target 'thodclip-bindings'
+    & wasm-bindgen --target no-modules --no-typescript --out-name thodclip --out-dir $wasmDir (Join-Path $target "wasm32-unknown-unknown/$profile/thodclip_frontend.wasm")
+    if ($LASTEXITCODE -ne 0) { throw 'wasm-bindgen failed.' }
+    Copy-Item -LiteralPath (Join-Path $wasmDir 'thodclip.js') -Destination (Join-Path $uiOut 'thodclip.js')
+
+    # The sandboxed module iframe has an opaque origin. Load the Wasm bytes through a local
+    # classic script, which the hub already supports, without a cross-origin fetch.
+    $binary = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $wasmDir 'thodclip_bg.wasm')))
+    $initializer = @"
+(() => {
+  const bytes = Uint8Array.from(atob('$binary'), char => char.charCodeAt(0));
+  wasm_bindgen({ module_or_path: bytes }).catch(error => {
+    console.error(error);
+    document.getElementById('captureLabel').textContent = 'Не удалось загрузить ThodClip';
+  });
+})();
+"@
+    [IO.File]::WriteAllText((Join-Path $uiOut 'start.js'), $initializer, [Text.UTF8Encoding]::new($false))
+    foreach ($file in 'index.html', 'styles.css', 'thodhub.js') {
+        Copy-Item -LiteralPath (Join-Path $root "ui/$file") -Destination $uiOut
+    }
+}
+finally {
+    Pop-Location
 }
 
 # --- manifest ---------------------------------------------------------------

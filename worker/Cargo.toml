@@ -1,0 +1,27 @@
+[package]
+name = "thodclip-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = "0.4"
+html-escape = "0.2"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+notify = { version = "8", default-features = false }
+regex = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_GdiPlus", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Security", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Globalization"] }
+
+
+[build-dependencies]
+embed-resource = "3"

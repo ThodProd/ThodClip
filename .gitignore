@@ -6,3 +6,6 @@ obj/
 TestResults/
 
 .qa/
+
+/target/
+/graphify-out/
