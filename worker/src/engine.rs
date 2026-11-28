@@ -1,5 +1,5 @@
 use crate::{
-    clipboard::{Clipboard, Kind, screen_size},
+    clipboard::{Clipboard, Kind},
     images,
     integration::{self, Integration, Lease},
     screenshot_watch::ScreenshotWatch,
@@ -214,18 +214,16 @@ impl Engine {
                 files,
             } => {
                 let id = self.store.add_image(&png, width, height, source, &files)?;
-                if screenshots::clipboard_screenshot(&files, source, width, height, screen_size()) {
-                    let source = source.filter(|name| !name.trim().is_empty()).map_or_else(
-                        || "Буфер обмена".into(),
-                        |source| format!("Буфер обмена · {source}"),
-                    );
-                    if self
-                        .store
-                        .add_shot(&png, "png", &source, "", true)?
-                        .is_some()
-                    {
-                        self.last_shot = Some(timestamp());
-                    }
+                let source = source.filter(|name| !name.trim().is_empty()).map_or_else(
+                    || "Буфер обмена".into(),
+                    |source| format!("Буфер обмена · {source}"),
+                );
+                if self
+                    .store
+                    .add_shot(&png, "png", &source, "", true)?
+                    .is_some()
+                {
+                    self.last_shot = Some(timestamp());
                 }
                 id
             }
@@ -708,4 +706,40 @@ fn import(root: PathBuf, folders: Vec<PathBuf>, cancel: &AtomicBool) -> Result<I
         .scanned
         .saturating_sub(summary.imported + summary.failed);
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_clipboard_image_is_saved_in_history_and_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = Engine::new(
+            Integration {
+                root: directory.path().join("data"),
+                home: directory.path().join("cache"),
+            },
+            false,
+        )
+        .unwrap();
+        let png = images::png(&image::DynamicImage::new_rgb8(64, 48)).unwrap();
+        engine
+            .capture(
+                Kind::Image {
+                    png,
+                    width: 64,
+                    height: 48,
+                    files: vec![],
+                },
+                Some("ThodShot"),
+            )
+            .unwrap();
+
+        let (total, shots) = engine.store.shots("", 0, 10).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(shots[0].source, "Буфер обмена · ThodShot");
+        let (total, _) = engine.store.clips("", "image", false, None, 0, 10).unwrap();
+        assert_eq!(total, 1);
+    }
 }

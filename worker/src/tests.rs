@@ -224,7 +224,7 @@ fn settings_roundtrip_bom_and_clamps() {
 }
 
 #[test]
-fn screenshot_detector_reads_paths_owners_and_screen_dimensions() {
+fn screenshot_detector_reads_folder_and_file_names() {
     let image = r"C:\Users\test\AppData\Local\Packages\MicrosoftWindows.Client.Core_x\TempState\ScreenClip\{a}.png";
     assert!(screenshots::screenshot(Path::new(image)));
     assert!(screenshots::screenshot(Path::new(
@@ -236,34 +236,6 @@ fn screenshot_detector_reads_paths_owners_and_screen_dimensions() {
     assert!(!screenshots::screenshot(Path::new(
         r"C:\Pictures\Some image.png"
     )));
-    assert!(screenshots::clipboard_screenshot(
-        &[image.into()],
-        Some("svchost"),
-        400,
-        300,
-        (1920, 1080)
-    ));
-    assert!(screenshots::clipboard_screenshot(
-        &[],
-        Some("SnippingTool"),
-        400,
-        300,
-        (1920, 1080)
-    ));
-    assert!(screenshots::clipboard_screenshot(
-        &[],
-        Some("svchost"),
-        1919,
-        1080,
-        (1920, 1080)
-    ));
-    assert!(!screenshots::clipboard_screenshot(
-        &[],
-        Some("svchost"),
-        400,
-        300,
-        (1920, 1080)
-    ));
 }
 
 #[test]

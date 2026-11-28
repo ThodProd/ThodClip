@@ -134,43 +134,6 @@ pub fn screenshot(path: &Path) -> bool {
         || SCREENSHOT_NAME.is_match(file)
 }
 
-pub fn clipboard_screenshot(
-    files: &[String],
-    source: Option<&str>,
-    width: u32,
-    height: u32,
-    screen: (u32, u32),
-) -> bool {
-    if flag("THODCLIP_ARCHIVE_ALL_IMAGES") {
-        return true;
-    }
-    if width == 0 || height == 0 {
-        return false;
-    }
-    let owner = source.unwrap_or_default().to_lowercase();
-    let hints = [
-        "snip",
-        "screensketch",
-        "screenclip",
-        "screenshot",
-        "screenpresso",
-        "sharex",
-        "lightshot",
-        "greenshot",
-        "flameshot",
-        "picpick",
-        "gyazo",
-    ];
-    let (sw, sh) = screen;
-    files.iter().any(|path| screenshot(Path::new(path)))
-        || hints.iter().any(|hint| owner.contains(hint))
-        || (sw > 0
-            && sh > 0
-            && ((width.abs_diff(sw) <= 2 && height.abs_diff(sh) <= 2)
-                || u64::from(width) * u64::from(height)
-                    >= u64::from(sw) * u64::from(sh) * 85 / 100))
-}
-
 pub fn candidates(directory: &Path) -> Vec<(PathBuf, fs::Metadata)> {
     fs::read_dir(directory)
         .into_iter()

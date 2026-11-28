@@ -500,12 +500,3 @@ fn read_bitmap() -> Option<Vec<u8>> {
         dib_to_bmp(dib)
     }
 }
-
-pub fn screen_size() -> (u32, u32) {
-    unsafe {
-        (
-            GetSystemMetrics(SM_CXSCREEN).max(0) as u32,
-            GetSystemMetrics(SM_CYSCREEN).max(0) as u32,
-        )
-    }
-}
